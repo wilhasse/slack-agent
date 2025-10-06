@@ -1,0 +1,272 @@
+[
+  {
+    "id": "D083S5WFNPJ",
+    "name": "@anderson",
+    "topic": "",
+    "purpose": "DM with Anderson",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082WP723QW",
+    "name": "@mendes",
+    "topic": "",
+    "purpose": "DM with Mendes",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0833BVQ75G",
+    "name": "@vitor",
+    "topic": "",
+    "purpose": "DM with Vitor",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D08339B3ZMH",
+    "name": "@thiago.dutra",
+    "topic": "",
+    "purpose": "DM with Thiago",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0830GGT32R",
+    "name": "@reinaldo",
+    "topic": "",
+    "purpose": "DM with Reinaldo",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082NRNL5T9",
+    "name": "@max.olimpio",
+    "topic": "",
+    "purpose": "DM with Max",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083G2R7TGR",
+    "name": "@alessandro.gomes",
+    "topic": "",
+    "purpose": "DM with Alessandro",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0835T1G2N8",
+    "name": "@alexandre",
+    "topic": "",
+    "purpose": "DM with Alexandre",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0833BVQAJW",
+    "name": "@mario",
+    "topic": "",
+    "purpose": "DM with Mário",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082WP720TG",
+    "name": "@wil",
+    "topic": "",
+    "purpose": "DM with Willian",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083S5WFRG8",
+    "name": "@diego",
+    "topic": "",
+    "purpose": "DM with Diego",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083S5WDG9W",
+    "name": "@slackbot",
+    "topic": "",
+    "purpose": "DM with Slackbot",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083S5WDG9W",
+    "name": "@slackbot",
+    "topic": "",
+    "purpose": "DM with Slackbot",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083S5WFNPJ",
+    "name": "@anderson",
+    "topic": "",
+    "purpose": "DM with Anderson",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082WP723QW",
+    "name": "@mendes",
+    "topic": "",
+    "purpose": "DM with Mendes",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0833BVQ75G",
+    "name": "@vitor",
+    "topic": "",
+    "purpose": "DM with Vitor",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D08339B3ZMH",
+    "name": "@thiago.dutra",
+    "topic": "",
+    "purpose": "DM with Thiago",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0830GGT32R",
+    "name": "@reinaldo",
+    "topic": "",
+    "purpose": "DM with Reinaldo",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082NRNL5T9",
+    "name": "@max.olimpio",
+    "topic": "",
+    "purpose": "DM with Max",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D083G2R7TGR",
+    "name": "@alessandro.gomes",
+    "topic": "",
+    "purpose": "DM with Alessandro",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0835T1G2N8",
+    "name": "@alexandre",
+    "topic": "",
+    "purpose": "DM with Alexandre",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D0833BVQAJW",
+    "name": "@mario",
+    "topic": "",
+    "purpose": "DM with Mário",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "D082WP720TG",
+    "name": "@wil",
+    "topic": "",
+    "purpose": "DM with Willian",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "C01MERA7J81",
+    "name": "#cslog",
+    "topic": "",
+    "purpose": "cslog-alpha",
+    "memberCount": 40,
+    "mpim": false,
+    "im": false,
+    "private": false
+  },
+  {
+    "id": "D083S5WFRG8",
+    "name": "@diego",
+    "topic": "",
+    "purpose": "DM with Diego",
+    "memberCount": 2,
+    "mpim": false,
+    "im": true,
+    "private": false
+  },
+  {
+    "id": "C04Q0MC8EVA",
+    "name": "#cslog-alertas-bd",
+    "topic": "Alertas relacionados ao BD",
+    "purpose": "Alertas de Banco de Dados\n- LOCK DE BANCO\n- ALERTA DE ESPAÇO CRITICO\n- ALERTA FALHA NA REPLICA",
+    "memberCount": 8,
+    "mpim": false,
+    "im": false,
+    "private": true
+  },
+  {
+    "id": "C05Q5HNPLAY",
+    "name": "#cslog-alertas-sc",
+    "topic": "Alerta de Serviços",
+    "purpose": "",
+    "memberCount": 7,
+    "mpim": false,
+    "im": false,
+    "private": true
+  }
+]

@@ -1,0 +1,62 @@
+# Slack MCP Server (built binary and cloned repo)
+slack-mcp-server/
+
+# Python Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environment files with sensitive tokens
+.env
+.env.oauth
+.env.local
+.env.*.local
+
+# Config with OAuth token (use config_example.py as template)
+config.py
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database files (if using SQLite for advanced_example.py)
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.old
+*.backup
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/

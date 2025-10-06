@@ -1,0 +1,122 @@
+# Configuração do Monitor de Slack
+# Slack Monitor Configuration
+
+# Canais para monitorar (prefixos suportados com *)
+# Channels to monitor (prefixes supported with *)
+channels:
+  - "cslog-alertas*"  # Todos os canais que começam com cslog-alertas
+
+# Palavras-chave que indicam mensagens importantes (em português)
+# Keywords that indicate important messages (in Portuguese)
+keywords:
+  # Urgência / Urgency
+  - "urgente"
+  - "urgência"
+  - "emergência"
+  - "emergencia"
+  - "imediato"
+  - "crítico"
+  - "critico"
+  - "prioridade"
+
+  # Problemas / Problems
+  - "erro"
+  - "falha"
+  - "falhou"
+  - "quebrado"
+  - "quebrada"
+  - "parado"
+  - "parada"
+  - "fora do ar"
+  - "indisponível"
+  - "indisponivel"
+  - "timeout"
+  - "lento"
+  - "lenta"
+
+  # Pedidos de ajuda / Help requests
+  - "ajuda"
+  - "socorro"
+  - "help"
+  - "alguém"
+  - "alguem"
+  - "por favor"
+  - "pfv"
+
+  # Alertas de sistema / System alerts
+  - "alerta"
+  - "aviso"
+  - "atenção"
+  - "atencao"
+  - "incidente"
+  - "problema"
+  - "bug"
+
+  # Produção / Production
+  - "produção"
+  - "producao"
+  - "prod"
+  - "cliente"
+  - "usuário"
+  - "usuario"
+
+  # Status / Status
+  - "down"
+  - "offline"
+  - "caiu"
+  - "caindo"
+  - "travado"
+  - "travando"
+
+  # Códigos de erro / Error codes
+  - "500"
+  - "502"
+  - "503"
+  - "504"
+  - "erro 5"
+  - "exception"
+  - "exceção"
+
+# Intervalo de verificação em segundos
+# Check interval in seconds
+check_interval: 10  # 10 seconds
+
+# Recursos avançados / Advanced features
+advanced:
+  # Ativar notificações desktop
+  # Enable desktop notifications
+  notifications: true
+
+  # Caminho do banco de dados para histórico
+  # Database path for history
+  database: "slack_messages.db"
+
+  # Salvar mensagens no banco
+  # Save messages to database
+  persist: true
+
+# Configuração do servidor MCP
+# MCP server configuration
+mcp_server:
+  type: "stdio"
+  command: "npx"
+  args: ["-y", "@korotovsky/slack-mcp-server"]
+
+# Regras customizadas de importância (opcional)
+# Custom importance rules (optional)
+importance_rules: |
+  Regras adicionais para determinar importância de mensagens:
+
+  1. Mensagens de líderes ou gerentes são sempre IMPORTANTES
+  2. Mensagens em canais cslog-alertas-* são sempre analisadas
+  3. Mensagens sobre sistemas críticos são CRÍTICAS
+  4. Falhas de build/deploy são IMPORTANTES
+  5. Problemas reportados por clientes são CRÍTICOS
+  6. Alertas de segurança são sempre CRÍTICOS
+  7. Mensagens de bots são NORMAIS, exceto se contiverem "erro" ou "falhou"
+
+  Classificar como:
+  - CRÍTICO: Precisa de atenção imediata
+  - IMPORTANTE: Revisar em até 1 hora
+  - NORMAL: Revisar quando conveniente
+  - IGNORAR: Não relevante
