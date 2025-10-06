@@ -8,6 +8,10 @@ channels:
 # Channel to send summary/filtered alerts to
 summary_channel: "cslog-alertas-resumo"
 
+# Channel ID (for faster lookups - no need to resolve name)
+# Get from Slack URL or monitor output
+summary_channel_id: "C09KQ5L2SF2"
+
 # Keywords that indicate important messages (Portuguese + English)
 keywords:
   # Portuguese - Urgência

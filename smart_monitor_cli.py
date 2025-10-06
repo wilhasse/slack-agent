@@ -142,6 +142,7 @@ async def run_monitor(config: dict, run_once: bool = False):
     keywords = config.get("keywords", ["urgent", "critical", "error"])
     check_interval = config.get("check_interval", 300)
     summary_channel = config.get("summary_channel")
+    summary_channel_id = config.get("summary_channel_id")
 
     # Smart filtering settings (use smart_filtering section, fallback to filtering for backwards compat)
     smart_filtering = config.get("smart_filtering", config.get("filtering", {}))
@@ -184,6 +185,11 @@ async def run_monitor(config: dict, run_once: bool = False):
 
     # Store interactive mode preference
     monitor.interactive_mode = interactive_mode
+
+    # Pre-set channel ID if provided (skips lookup)
+    if summary_channel_id:
+        monitor._summary_channel_id = summary_channel_id
+        print(f"   Using pre-configured channel ID: {summary_channel_id}")
 
     # Update system prompt with custom rules if provided
     if "importance_rules" in config:
