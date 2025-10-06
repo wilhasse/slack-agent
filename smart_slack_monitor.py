@@ -71,6 +71,7 @@ class SmartSlackMonitor(SlackMonitor):
         self.slack_webhook_url = slack_webhook_url
         self.interaction_check_interval = interaction_check_interval
         self.last_interaction_check = datetime.now()
+        self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
 
         self._init_database()
 
@@ -437,10 +438,12 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         if not self.summary_channel or not self.client:
             return
 
-        # Use separate time tracking for interactions
-        seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
+        # Use lock to prevent concurrent Claude queries
+        async with self._client_lock:
+            # Use separate time tracking for interactions
+            seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
 
-        query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {seconds_ago} seconds.
+            query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {seconds_ago} seconds.
 
 Look for messages that:
 1. Are questions or commands directed at the monitoring system
@@ -456,28 +459,28 @@ Text: [message text]
 
 If no interactions found, just say "No interactions found"."""
 
-        try:
-            await self.client.query(query)
+            try:
+                await self.client.query(query)
 
-            response_text = ""
-            async for msg in self.client.receive_response():
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            response_text += block.text
+                response_text = ""
+                async for msg in self.client.receive_response():
+                    if hasattr(msg, 'content'):
+                        for block in msg.content:
+                            if hasattr(block, 'text'):
+                                response_text += block.text
 
-            # Check if there are interactions
-            if "---INTERACTION---" in response_text:
-                print(f"💬 Found user interaction in #{self.summary_channel}")
-                await self._handle_interaction(response_text)
+                # Check if there are interactions
+                if "---INTERACTION---" in response_text:
+                    print(f"💬 Found user interaction in #{self.summary_channel}")
+                    await self._handle_interaction(response_text)
 
-            # Update last interaction check time
-            self.last_interaction_check = datetime.now()
+                # Update last interaction check time
+                self.last_interaction_check = datetime.now()
 
-        except Exception as e:
-            print(f"⚠️ Error checking interactions: {e}")
-            # Still update check time to avoid getting stuck
-            self.last_interaction_check = datetime.now()
+            except Exception as e:
+                print(f"⚠️ Error checking interactions: {e}")
+                # Still update check time to avoid getting stuck
+                self.last_interaction_check = datetime.now()
 
     async def _handle_interaction(self, interaction_text: str):
         """Respond to user questions with context from alert history"""
@@ -571,16 +574,18 @@ Your response will be posted directly to Slack."""
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
 
-        # Get base analysis from parent class
-        print("\n🔍 Fetching and analyzing messages...")
+        # Use lock to prevent concurrent Claude queries
+        async with self._client_lock:
+            # Get base analysis from parent class
+            print("\n🔍 Fetching and analyzing messages...")
 
-        # Calculate time window
-        minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
+            # Calculate time window
+            minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
 
-        # Build query
-        if self.channels_to_monitor:
-            channel_list = ", ".join(self.channels_to_monitor)
-            query = f"""USE Slack tools to check messages from: {channel_list}
+            # Build query
+            if self.channels_to_monitor:
+                channel_list = ", ".join(self.channels_to_monitor)
+                query = f"""USE Slack tools to check messages from: {channel_list}
 
 Look at messages from the last {minutes_ago} minutes.
 
@@ -595,8 +600,8 @@ Reason: [why this matters or doesn't]
 ---END MESSAGE---
 
 Be thorough - I need ALL fields for each message."""
-        else:
-            query = f"""USE Slack tools to search for messages with keywords: {", ".join(self.keywords)}
+            else:
+                query = f"""USE Slack tools to search for messages with keywords: {", ".join(self.keywords)}
 
 From the last {minutes_ago} minutes.
 
@@ -610,71 +615,71 @@ Importance: [CRITICAL/IMPORTANT/NORMAL/IGNORE]
 Reason: [why this matters]
 ---END MESSAGE---"""
 
-        await self.client.query(query)
+            await self.client.query(query)
 
-        raw_analysis = ""
-        async for msg in self.client.receive_response():
-            if hasattr(msg, 'content'):
-                for block in msg.content:
-                    if hasattr(block, 'text'):
-                        raw_analysis += block.text
+            raw_analysis = ""
+            async for msg in self.client.receive_response():
+                if hasattr(msg, 'content'):
+                    for block in msg.content:
+                        if hasattr(block, 'text'):
+                            raw_analysis += block.text
 
-        print(f"\n📊 Raw Analysis:\n{raw_analysis}\n")
+            print(f"\n📊 Raw Analysis:\n{raw_analysis}\n")
 
-        # Parse Claude's response into alerts
-        alerts = self._parse_analysis(raw_analysis)
+            # Parse Claude's response into alerts
+            alerts = self._parse_analysis(raw_analysis)
 
-        print(f"\n📋 Found {len(alerts)} messages to analyze")
+            print(f"\n📋 Found {len(alerts)} messages to analyze")
 
-        # Process each alert
-        alerts_to_send = []
+            # Process each alert
+            alerts_to_send = []
 
-        for alert in alerts:
-            # Compute signatures
-            alert.content_hash = self._compute_content_hash(alert.text)
-            alert.pattern_signature = self._extract_pattern_signature(alert.text, alert.channel)
+            for alert in alerts:
+                # Compute signatures
+                alert.content_hash = self._compute_content_hash(alert.text)
+                alert.pattern_signature = self._extract_pattern_signature(alert.text, alert.channel)
 
-            # Update pattern tracking
-            pattern_info = self._update_pattern_tracking(alert.pattern_signature)
+                # Update pattern tracking
+                pattern_info = self._update_pattern_tracking(alert.pattern_signature)
 
-            # Decide if we should send this alert
-            should_send, reason = await self._should_send_alert(alert, pattern_info)
+                # Decide if we should send this alert
+                should_send, reason = await self._should_send_alert(alert, pattern_info)
 
-            # Save to database
-            self._save_alert(alert, sent=should_send)
-            self._log_decision(alert, "SEND" if should_send else "SKIP", reason)
+                # Save to database
+                self._save_alert(alert, sent=should_send)
+                self._log_decision(alert, "SEND" if should_send else "SKIP", reason)
 
-            # Log decision with preview
-            status_icon = "✅" if should_send else "⏭️"
-            msg_preview = alert.text[:60] + "..." if len(alert.text) > 60 else alert.text
-            print(f"{status_icon} [{alert.importance}] #{alert.channel} - {reason}")
-            if should_send:
-                print(f"   📝 Message: \"{msg_preview}\"")
+                # Log decision with preview
+                status_icon = "✅" if should_send else "⏭️"
+                msg_preview = alert.text[:60] + "..." if len(alert.text) > 60 else alert.text
+                print(f"{status_icon} [{alert.importance}] #{alert.channel} - {reason}")
+                if should_send:
+                    print(f"   📝 Message: \"{msg_preview}\"")
 
-            if should_send:
-                alerts_to_send.append(alert)
-                self._mark_pattern_sent(alert.pattern_signature)
+                if should_send:
+                    alerts_to_send.append(alert)
+                    self._mark_pattern_sent(alert.pattern_signature)
 
-        # Update last check time
-        self.last_check_time = datetime.now()
+            # Update last check time
+            self.last_check_time = datetime.now()
 
-        # Check if we should send full analysis instead
-        send_full_analysis = getattr(self, 'send_full_analysis', False)
+            # Check if we should send full analysis instead
+            send_full_analysis = getattr(self, 'send_full_analysis', False)
 
-        if self.summary_channel:
-            if send_full_analysis:
-                # Send Claude's complete raw analysis
-                await self._send_full_analysis(raw_analysis, len(alerts))
-            elif alerts_to_send:
-                # Send filtered summary
-                await self._send_smart_summary(alerts_to_send)
-            else:
-                print(f"\n✅ No alerts met sending criteria - keeping channel clean")
+            if self.summary_channel:
+                if send_full_analysis:
+                    # Send Claude's complete raw analysis
+                    await self._send_full_analysis(raw_analysis, len(alerts))
+                elif alerts_to_send:
+                    # Send filtered summary
+                    await self._send_smart_summary(alerts_to_send)
+                else:
+                    print(f"\n✅ No alerts met sending criteria - keeping channel clean")
 
-        # Don't check interactions here - they're checked on a separate faster schedule
-        # in monitor_continuously()
+            # Don't check interactions here - they're checked on a separate faster schedule
+            # in monitor_continuously()
 
-        return []  # Return empty for compatibility
+            return []  # Return empty for compatibility
 
     def _parse_analysis(self, raw_text: str) -> List[Alert]:
         """Parse Claude's analysis into Alert objects"""
