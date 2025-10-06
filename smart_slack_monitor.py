@@ -930,6 +930,11 @@ Message (send exactly as shown):
             return
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Get recent alerts summary
+        summary_hours = getattr(self, 'startup_summary_hours', 1)
+        recent_summary = self._get_recent_alerts_summary(summary_hours)
+
         message = f"""🤖 *Smart Slack Monitor Started*
 
 📅 Started at: {timestamp}
@@ -937,6 +942,8 @@ Message (send exactly as shown):
 🎯 Min urgency: {self.min_urgency_level}
 🔄 Dedup window: {self.duplicate_window_hours}h
 📊 Recurrence threshold: {self.recurrence_threshold}x
+
+{recent_summary}
 
 _Monitor is now active and filtering alerts intelligently..._"""
 
@@ -952,6 +959,60 @@ _Monitor is now active and filtering alerts intelligently..._"""
                 print(f"❌ Startup notification FAILED to #{self.summary_channel} via {method}")
         except Exception as e:
             print(f"❌ Could not send startup notification: {e}")
+
+    def _get_recent_alerts_summary(self, hours: int) -> str:
+        """Get summary of recent alerts from database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Get alerts from last N hours
+            cursor.execute("""
+                SELECT channel, text, importance, created_at
+                FROM alerts
+                WHERE created_at > datetime('now', '-' || ? || ' hours')
+                ORDER BY created_at DESC
+            """, (hours,))
+
+            alerts = cursor.fetchall()
+            conn.close()
+
+            if not alerts:
+                return f"📭 *Resumo das últimas {hours}h:* Nenhum alerta registrado"
+
+            # Count by importance
+            critical = sum(1 for a in alerts if a[2] == "CRITICAL")
+            important = sum(1 for a in alerts if a[2] == "IMPORTANT")
+
+            summary_parts = [f"📊 *Resumo das últimas {hours}h:*"]
+
+            if critical > 0:
+                summary_parts.append(f"   🚨 {critical} CRÍTICO(S)")
+            if important > 0:
+                summary_parts.append(f"   ⚠️ {important} IMPORTANTE(S)")
+
+            # Show last 3 most important alerts
+            important_alerts = [a for a in alerts if a[2] in ["CRITICAL", "IMPORTANT"]][:3]
+
+            if important_alerts:
+                summary_parts.append(f"\n*Últimos alertas importantes:*")
+                for channel, text, importance, created_at in important_alerts:
+                    # Format time
+                    try:
+                        dt = datetime.fromisoformat(created_at)
+                        time_str = dt.strftime('%H:%M')
+                    except:
+                        time_str = created_at
+
+                    # Truncate message
+                    msg_preview = text[:60] + "..." if len(text) > 60 else text
+                    icon = "🚨" if importance == "CRITICAL" else "⚠️"
+                    summary_parts.append(f"{icon} {time_str} - #{channel}: {msg_preview}")
+
+            return "\n".join(summary_parts)
+
+        except Exception as e:
+            return f"⚠️ Não foi possível carregar resumo: {e}"
 
     async def _interaction_loop(self):
         """Separate loop for checking interactions at faster interval"""

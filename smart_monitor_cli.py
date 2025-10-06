@@ -157,6 +157,7 @@ async def run_monitor(config: dict, run_once: bool = False):
     advanced = config.get("advanced", {})
     db_path = advanced.get("smart_database", advanced.get("database", "smart_alerts.db"))
     send_startup = advanced.get("send_startup_notification", True)
+    startup_summary_hours = advanced.get("startup_summary_hours", 1)
     webhook_url = advanced.get("slack_webhook_url")
 
     # Create monitor
@@ -176,6 +177,7 @@ async def run_monitor(config: dict, run_once: bool = False):
 
     # Store startup notification preference
     monitor.send_startup_notification = send_startup
+    monitor.startup_summary_hours = startup_summary_hours
 
     # Store full analysis mode preference
     monitor.send_full_analysis = send_full_analysis

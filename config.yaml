@@ -128,6 +128,10 @@ advanced:
   # Send startup notification to summary channel
   send_startup_notification: true
 
+  # Include summary of recent alerts in startup notification
+  # Shows what happened in the last N hours before starting
+  startup_summary_hours: 1  # Look back 1 hour
+
   # Database paths
   database: "slack_messages.db"           # Standard monitor
   smart_database: "smart_alerts.db"       # Smart monitor
