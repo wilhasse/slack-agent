@@ -73,6 +73,7 @@ class SmartSlackMonitor(SlackMonitor):
         self.last_interaction_check = datetime.now()
         self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
         self._summary_channel_id = None  # Cache channel ID for faster lookups
+        self._responded_messages = set()  # Track which messages we've already responded to
 
         self._init_database()
 
@@ -518,6 +519,14 @@ If no human messages found, say "No interactions found"."""
         if not question:
             return
 
+        # Create unique ID for this message to avoid duplicate responses
+        message_id = hashlib.md5(f"{user}:{question}".encode()).hexdigest()
+
+        # Check if we already responded to this message
+        if message_id in self._responded_messages:
+            print(f"   Already responded to message from @{user}, skipping")
+            return
+
         print(f"   Question from @{user}: {question[:60]}...")
 
         # Get recent alert context from database
@@ -569,6 +578,11 @@ Be concise. Use Portuguese if question is in Portuguese."""
                 success = await self._send_to_slack(reply)
                 if success:
                     print(f"   ✅ Responded to @{user}")
+                    # Mark this message as responded to avoid duplicates
+                    self._responded_messages.add(message_id)
+                    # Keep set size manageable (max 100 recent messages)
+                    if len(self._responded_messages) > 100:
+                        self._responded_messages.pop()
                 else:
                     print(f"   ❌ Failed to send response")
 
