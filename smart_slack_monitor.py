@@ -69,8 +69,8 @@ class SmartSlackMonitor(SlackMonitor):
         self.critical_dedup_hours = critical_dedup_hours
         self.recurrence_threshold = recurrence_threshold
         self.slack_webhook_url = slack_webhook_url
-        self.interaction_check_interval = interaction_check_interval
-        self.last_interaction_check = datetime.now()
+        self.interaction_check_interval = max(1, interaction_check_interval)
+        self.last_interaction_check = datetime.now() - timedelta(seconds=self.interaction_check_interval)
         self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
         self._summary_channel_id = None  # Cache channel ID for faster lookups
         self._responded_messages = set()  # Track which messages we've already responded to
@@ -412,20 +412,15 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
 
         try:
             await self.client.query(query)
+            response, _ = await self._collect_response_text(timeout=self.response_timeout)
 
-            response = ""
-            async for msg in self.client.receive_response():
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            response += block.text
-
-            # Parse response
-            response_upper = response.upper()
-            if "YES" in response_upper[:10]:
-                return True
-            else:
+            if not response.strip():
                 return False
+
+            response_upper = response.upper().strip()
+            if response_upper.startswith("YES"):
+                return True
+            return False
         except Exception as e:
             print(f"⚠️  Error asking Claude for decision: {e}")
             # Default to not sending if there's an error
@@ -450,6 +445,8 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         async with self._client_lock:
             # Use separate time tracking for interactions
             seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
+            if seconds_ago <= 0:
+                seconds_ago = self.interaction_check_interval
 
             # Use cached channel ID if available (much faster!)
             channel_ref = self._summary_channel_id if self._summary_channel_id else self.summary_channel
@@ -484,12 +481,7 @@ If no NEW human messages found, say "No interactions found"."""
                 print(f"🔄 Checking for interactions (last {seconds_ago}s)...")
                 await self.client.query(query)
 
-                response_text = ""
-                async for msg in self.client.receive_response():
-                    if hasattr(msg, 'content'):
-                        for block in msg.content:
-                            if hasattr(block, 'text'):
-                                response_text += block.text
+                response_text, _ = await self._collect_response_text(timeout=self.response_timeout)
 
                 # Debug: Show what Claude said
                 if response_text and "No interactions found" not in response_text:
@@ -577,13 +569,7 @@ Be concise. Use Portuguese if question is in Portuguese."""
 
         try:
             await self.client.query(response_query)
-
-            response_text = ""
-            async for msg in self.client.receive_response():
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            response_text += block.text
+            response_text, _ = await self._collect_response_text(timeout=self.response_timeout)
 
             # Send response to Slack
             if response_text.strip():
@@ -659,12 +645,12 @@ Reason: [why this matters]
 
             await self.client.query(query)
 
-            raw_analysis = ""
-            async for msg in self.client.receive_response():
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            raw_analysis += block.text
+            raw_analysis, _ = await self._collect_response_text(timeout=self.response_timeout)
+
+            if not raw_analysis.strip():
+                print("⚠️ No analysis response received from Claude; skipping this cycle")
+                self.last_check_time = datetime.now()
+                return []
 
             print(f"\n📊 Raw Analysis:\n{raw_analysis}\n")
 
@@ -923,9 +909,11 @@ _Full report mode - showing Claude's complete analysis_"""
         # Escape for safer transmission
         safe_message = message.replace('"', "'").replace('`', "'")
 
+        channel_ref = self._summary_channel_id if self._summary_channel_id else self.summary_channel
+
         query = f"""Use the mcp__slack__conversations_add_message tool with these parameters:
 
-channel: "{self.summary_channel}"
+channel: "{channel_ref}"
 text: The complete alert message below
 
 IMPORTANT: Send the COMPLETE message including ALL lines. Do not truncate or summarize.
@@ -938,13 +926,11 @@ Message (send exactly as shown):
         try:
             await self.client.query(query)
 
-            # Consume and check response
-            response = ""
-            async for msg in self.client.receive_response():
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            response += block.text
+            response, _ = await self._collect_response_text(timeout=self.response_timeout)
+
+            if not response.strip():
+                print("   MCP response was empty or timed out")
+                return False
 
             # Verify if it actually worked
             response_lower = response.lower()

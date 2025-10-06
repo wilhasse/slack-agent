@@ -7,15 +7,13 @@ Monitors Slack channels and filters messages that deserve attention
 import asyncio
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
     AssistantMessage,
-    TextBlock,
-    ToolUseBlock,
     ToolResultBlock
 )
 
@@ -41,7 +39,8 @@ class SlackMonitor:
         keywords: List[str] = None,
         check_interval: int = 300,  # 5 minutes
         mcp_server_config: Dict[str, Any] = None,
-        summary_channel: str = None
+        summary_channel: str = None,
+        response_timeout: float = 60.0,
     ):
         """
         Initialize Slack Monitor
@@ -57,8 +56,9 @@ class SlackMonitor:
         self.keywords = keywords or ["urgent", "critical", "emergency", "help", "alert"]
         self.check_interval = check_interval
         self.summary_channel = summary_channel
+        self.response_timeout = max(5.0, response_timeout)
         self.seen_messages: Set[str] = set()
-        self.last_check_time = datetime.now()
+        self.last_check_time = datetime.now() - timedelta(seconds=self.check_interval)
 
         # Configure MCP server for Slack
         if not mcp_server_config:
@@ -164,6 +164,51 @@ Be concise and focus on actionable insights."""
             await self.client.disconnect()
             print("👋 Disconnected from Claude")
 
+    async def _collect_response_text(
+        self,
+        timeout: float | None = None,
+    ) -> Tuple[str, List[Any]]:
+        """Collect text content from Claude's response with a timeout.
+
+        Returns a tuple of the concatenated text blocks and the raw message objects
+        for callers that need additional metadata.
+        """
+
+        if not self.client:
+            return "", []
+
+        effective_timeout = timeout or self.response_timeout
+
+        async def _consume() -> List[Any]:
+            collected: List[Any] = []
+            async for message in self.client.receive_response():
+                collected.append(message)
+            return collected
+
+        try:
+            messages = await asyncio.wait_for(_consume(), effective_timeout)
+        except asyncio.TimeoutError:
+            print(
+                f"⚠️ Timeout waiting for Claude response after {effective_timeout:.0f}s"
+            )
+            try:
+                await self.client.interrupt()
+            except Exception as interrupt_error:
+                print(f"⚠️ Failed to interrupt Claude: {interrupt_error}")
+            return "", []
+        except Exception as error:
+            print(f"❌ Error receiving Claude response: {error}")
+            return "", []
+
+        text_chunks: List[str] = []
+        for message in messages:
+            if isinstance(message, AssistantMessage):
+                for block in getattr(message, "content", []):
+                    if hasattr(block, "text") and block.text:
+                        text_chunks.append(block.text)
+
+        return "".join(text_chunks), messages
+
     async def get_channels(self) -> List[Dict[str, Any]]:
         """Get list of Slack channels"""
         if not self.client:
@@ -174,12 +219,13 @@ Be concise and focus on actionable insights."""
         )
 
         channels = []
-        async for message in self.client.receive_response():
+        _, messages = await self._collect_response_text()
+
+        for message in messages:
             if isinstance(message, AssistantMessage):
-                for block in message.content:
+                for block in getattr(message, "content", []):
                     if isinstance(block, ToolResultBlock):
-                        # Parse channel data from tool result
-                        # This is a simplified version - actual parsing may vary
+                        # TODO: Parse channel data from tool result if needed
                         pass
 
         return channels
@@ -188,6 +234,8 @@ Be concise and focus on actionable insights."""
         """Check for new messages in monitored channels"""
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
+
+        messages: List[SlackMessage] = []
 
         # Calculate time window
         minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
@@ -228,17 +276,14 @@ If no messages are found, say so clearly."""
 
         await self.client.query(query)
 
-        messages = []
-        current_analysis = ""
-
-        async for msg in self.client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        current_analysis += block.text
+        current_analysis, _ = await self._collect_response_text()
 
         # Update last check time
         self.last_check_time = datetime.now()
+
+        if not current_analysis.strip():
+            print("⚠️ No analysis received from Claude; skipping this cycle")
+            return messages
 
         # Parse Claude's analysis into SlackMessage objects
         # This is simplified - you may want more robust parsing
@@ -278,13 +323,7 @@ Use the channel name '{self.summary_channel}'. If you get an error, show me the 
         try:
             await self.client.query(query)
 
-            # Consume the response and show full output for debugging
-            full_response = ""
-            async for msg in self.client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            full_response += block.text
+            full_response, _ = await self._collect_response_text()
 
             # Debug: show what Claude actually said
             print(f"\n🔍 Claude's response to posting summary:")
