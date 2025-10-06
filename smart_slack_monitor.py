@@ -72,6 +72,7 @@ class SmartSlackMonitor(SlackMonitor):
         self.interaction_check_interval = interaction_check_interval
         self.last_interaction_check = datetime.now()
         self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
+        self._summary_channel_id = None  # Cache channel ID for faster lookups
 
         self._init_database()
 
@@ -443,14 +444,19 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             # Use separate time tracking for interactions
             seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
 
-            query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {seconds_ago} seconds.
+            # Use cached channel ID if available (much faster!)
+            channel_ref = self._summary_channel_id if self._summary_channel_id else self.summary_channel
 
-Look for ANY messages from human users (NOT from bots or automated systems).
+            query = f"""USE the mcp__slack__conversations_history tool to get messages from channel "{channel_ref}".
 
-IMPORTANT:
+IMPORTANT: Use the channel identifier EXACTLY as provided: "{channel_ref}"
+
+Look for ANY messages from human users in the response (NOT from bots or automated systems).
+
+Filter rules:
 - Include ALL user messages, even simple statements
 - Ignore messages from bots (bot_id present or subtype: bot_message)
-- Ignore messages from yourself (the monitoring system)
+- Ignore messages from the monitoring system itself
 
 For EACH human user message found, respond with:
 ---INTERACTION---
@@ -915,6 +921,14 @@ Message (send exactly as shown):
                 print(f"   MCP error: {response[:300]}")
                 return False
             else:
+                # Try to extract channel ID from response for caching
+                if not self._summary_channel_id and "channel" in response_lower:
+                    # Look for channel ID pattern (C followed by alphanumerics)
+                    import re
+                    match = re.search(r'C[A-Z0-9]{10,}', response)
+                    if match:
+                        self._summary_channel_id = match.group(0)
+                        print(f"   📌 Cached channel ID: {self._summary_channel_id}")
                 return True
         except Exception as e:
             print(f"   MCP exception: {e}")
