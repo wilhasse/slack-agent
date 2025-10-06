@@ -150,6 +150,7 @@ async def run_monitor(config: dict, run_once: bool = False):
     critical_dedup = smart_filtering.get("critical_dedup_hours", 2)
     recurrence_threshold = smart_filtering.get("recurrence_threshold", 3)
     send_full_analysis = smart_filtering.get("send_full_analysis", False)
+    interactive_mode = smart_filtering.get("interactive_mode", False)
 
     # Advanced options
     advanced = config.get("advanced", {})
@@ -176,6 +177,9 @@ async def run_monitor(config: dict, run_once: bool = False):
 
     # Store full analysis mode preference
     monitor.send_full_analysis = send_full_analysis
+
+    # Store interactive mode preference
+    monitor.interactive_mode = interactive_mode
 
     # Update system prompt with custom rules if provided
     if "importance_rules" in config:
@@ -217,6 +221,8 @@ async def run_monitor(config: dict, run_once: bool = False):
     print(f"   ✓ Recurrence tracking")
     print(f"   ✓ Claude-powered decision making")
     print(f"   ✓ Historical analysis")
+    if interactive_mode:
+        print(f"   ✓ Interactive mode - Ask questions in #{summary_channel}!")
 
     print("=" * 70)
     print()

@@ -425,6 +425,129 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             # Default to not sending if there's an error
             return False
 
+    async def _check_for_interactions(self):
+        """Check if anyone is asking questions in the summary channel"""
+        # Check if interactive mode is enabled
+        if not getattr(self, 'interactive_mode', False):
+            return
+
+        if not self.summary_channel or not self.client:
+            return
+
+        minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
+
+        query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {minutes_ago} minutes.
+
+Look for messages that:
+1. Are questions or commands directed at the monitoring system
+2. Ask about alerts, errors, or system status
+3. Request more information or context
+4. Are NOT from the bot itself (ignore bot's own messages)
+
+If you find any such messages, respond with:
+---INTERACTION---
+User: [username]
+Text: [message text]
+---END INTERACTION---
+
+If no interactions found, just say "No interactions found"."""
+
+        try:
+            await self.client.query(query)
+
+            response_text = ""
+            async for msg in self.client.receive_response():
+                if hasattr(msg, 'content'):
+                    for block in msg.content:
+                        if hasattr(block, 'text'):
+                            response_text += block.text
+
+            # Check if there are interactions
+            if "---INTERACTION---" in response_text:
+                print(f"💬 Found user interaction in #{self.summary_channel}")
+                await self._handle_interaction(response_text)
+
+        except Exception as e:
+            print(f"⚠️ Error checking interactions: {e}")
+
+    async def _handle_interaction(self, interaction_text: str):
+        """Respond to user questions with context from alert history"""
+        # Extract user and question
+        lines = interaction_text.split('\n')
+        user = ""
+        question = ""
+
+        for line in lines:
+            if line.startswith("User:"):
+                user = line.replace("User:", "").strip()
+            elif line.startswith("Text:"):
+                question = line.replace("Text:", "").strip()
+
+        if not question:
+            return
+
+        print(f"   Question from @{user}: {question[:60]}...")
+
+        # Get recent alert context from database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT channel, text, importance, reason, created_at
+            FROM alerts
+            WHERE created_at > datetime('now', '-24 hours')
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+
+        recent_alerts = cursor.fetchall()
+        conn.close()
+
+        # Build context for Claude
+        context_parts = ["Recent alerts (last 24h):"]
+        for channel, text, importance, reason, created_at in recent_alerts:
+            preview = text[:100] if text else ""
+            context_parts.append(f"- [{importance}] #{channel}: {preview}")
+
+        context = "\n".join(context_parts)
+
+        # Ask Claude to respond with context
+        response_query = f"""You are monitoring Slack alerts. A user asked you a question in the monitoring channel.
+
+USER QUESTION: "{question}"
+
+RECENT ALERTS CONTEXT:
+{context}
+
+Please provide a helpful, concise response (2-3 sentences max) that:
+1. Answers their question using the alert context
+2. Is friendly and professional
+3. Uses Portuguese if the question was in Portuguese
+
+Your response will be posted directly to Slack."""
+
+        try:
+            await self.client.query(response_query)
+
+            response_text = ""
+            async for msg in self.client.receive_response():
+                if hasattr(msg, 'content'):
+                    for block in msg.content:
+                        if hasattr(block, 'text'):
+                            response_text += block.text
+
+            # Send response to Slack
+            if response_text.strip():
+                reply = f"💬 @{user}: {response_text.strip()}"
+                success = await self._send_to_slack(reply)
+                if success:
+                    print(f"   ✅ Responded to @{user}")
+                else:
+                    print(f"   ❌ Failed to send response")
+
+        except Exception as e:
+            print(f"❌ Error generating response: {e}")
+
     async def check_messages(self) -> List[SlackMessage]:
         """
         Override check_messages to add intelligent filtering.
@@ -434,6 +557,7 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         2. Analyzes each message
         3. Checks for duplicates and patterns
         4. Only sends truly urgent/recurrent alerts to Slack
+        5. Checks for user interactions in summary channel
         """
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
@@ -537,6 +661,9 @@ Reason: [why this matters]
                 await self._send_smart_summary(alerts_to_send)
             else:
                 print(f"\n✅ No alerts met sending criteria - keeping channel clean")
+
+        # Check for user interactions in summary channel
+        await self._check_for_interactions()
 
         return []  # Return empty for compatibility
 

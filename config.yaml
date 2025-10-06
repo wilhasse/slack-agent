@@ -93,6 +93,11 @@ smart_filtering:
   # Set to false to only see filtered alerts that pass criteria
   send_full_analysis: false  # ← Send concise filtered summaries only
 
+  # Enable interactive mode - Claude responds to questions in summary channel
+  # Users can ask about recent alerts, request context, or give commands
+  # Example: "What was that disk space alert about?" → Claude answers with context
+  interactive_mode: true
+
   # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
   min_urgency_level: "IMPORTANT"
 
