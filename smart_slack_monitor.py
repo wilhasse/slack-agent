@@ -445,19 +445,20 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
 
             query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {seconds_ago} seconds.
 
-Look for messages that:
-1. Are questions or commands directed at the monitoring system
-2. Ask about alerts, errors, or system status
-3. Request more information or context
-4. Are NOT from the bot itself (ignore bot's own messages)
+Look for ANY messages from human users (NOT from bots or automated systems).
 
-If you find any such messages, respond with:
+IMPORTANT:
+- Include ALL user messages, even simple statements
+- Ignore messages from bots (bot_id present or subtype: bot_message)
+- Ignore messages from yourself (the monitoring system)
+
+For EACH human user message found, respond with:
 ---INTERACTION---
 User: [username]
 Text: [message text]
 ---END INTERACTION---
 
-If no interactions found, just say "No interactions found"."""
+If no human messages found, say "No interactions found"."""
 
             try:
                 await self.client.query(query)
@@ -468,6 +469,10 @@ If no interactions found, just say "No interactions found"."""
                         for block in msg.content:
                             if hasattr(block, 'text'):
                                 response_text += block.text
+
+                # Debug: Show what Claude said
+                if response_text and "No interactions found" not in response_text:
+                    print(f"🔍 Interaction check response: {response_text[:200]}")
 
                 # Check if there are interactions
                 if "---INTERACTION---" in response_text:
