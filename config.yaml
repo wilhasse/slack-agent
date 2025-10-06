@@ -91,7 +91,7 @@ smart_filtering:
   # Send full Claude analysis instead of filtered summary
   # Set to true to see EVERYTHING Claude analyzes (for debugging/tuning)
   # Set to false to only see filtered alerts that pass criteria
-  send_full_analysis: true  # ← Send complete report for now
+  send_full_analysis: false  # ← Send concise filtered summaries only
 
   # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
   min_urgency_level: "IMPORTANT"

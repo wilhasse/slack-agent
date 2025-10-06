@@ -607,43 +607,36 @@ _Full report mode - showing Claude's complete analysis_"""
 
     async def _send_smart_summary(self, alerts: List[Alert]):
         """Send a smart summary of only the important alerts"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.now().strftime('%H:%M:%S')
 
         # Group by importance
         critical = [a for a in alerts if a.importance == "CRITICAL"]
         important = [a for a in alerts if a.importance == "IMPORTANT"]
 
-        summary_parts = [f"🔔 *Alert Summary - {timestamp}*\n"]
+        summary_parts = [f"🔔 *Alertas - {timestamp}*\n"]
 
         if critical:
-            summary_parts.append(f"🚨 *{len(critical)} CRITICAL Alert(s):*")
+            summary_parts.append(f"🚨 *{len(critical)} CRÍTICO:*")
             for i, alert in enumerate(critical, 1):
-                # Compact format - all on one line with separators
-                msg_text = alert.text.strip() if alert.text else "[No message text]"
-                if len(msg_text) > 100:
-                    msg_text = msg_text[:100] + "..."
+                # Very compact format - one line per alert
+                msg_text = alert.text.strip() if alert.text else "[No text]"
+                if len(msg_text) > 80:
+                    msg_text = msg_text[:80] + "..."
 
-                # All in one line for better Slack compatibility
-                summary_parts.append(f"\n{i}. *#{alert.channel}* (@{alert.user})")
-                summary_parts.append(f"   📝 {msg_text}")
-                if alert.reason:
-                    summary_parts.append(f"   ⚠️ {alert.reason}")
-                summary_parts.append("")  # Empty line
+                # Single line format
+                summary_parts.append(f"{i}. #{alert.channel} - {msg_text}")
 
         if important:
-            summary_parts.append(f"⚠️ *{len(important)} IMPORTANT Alert(s):*")
+            summary_parts.append(f"\n⚠️ *{len(important)} IMPORTANTE:*")
             for i, alert in enumerate(important, 1):
-                msg_text = alert.text.strip() if alert.text else "[No message text]"
-                if len(msg_text) > 100:
-                    msg_text = msg_text[:100] + "..."
+                msg_text = alert.text.strip() if alert.text else "[No text]"
+                if len(msg_text) > 80:
+                    msg_text = msg_text[:80] + "..."
 
-                summary_parts.append(f"\n{i}. *#{alert.channel}* (@{alert.user})")
-                summary_parts.append(f"   📝 {msg_text}")
-                if alert.reason:
-                    summary_parts.append(f"   ℹ️ {alert.reason}")
-                summary_parts.append("")  # Empty line
+                # Single line format
+                summary_parts.append(f"{i}. #{alert.channel} - {msg_text}")
 
-        summary_parts.append("\n_Filtered by Smart Monitor - only showing urgent/recurrent alerts_")
+        summary_parts.append("\n_Monitor inteligente - somente alertas urgentes/recorrentes_")
 
         summary = "\n".join(summary_parts)
 
