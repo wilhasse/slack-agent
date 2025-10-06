@@ -439,6 +439,12 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         if not self.summary_channel or not self.client:
             return
 
+        # Try to acquire lock, but don't wait if alerts are being checked
+        if self._client_lock.locked():
+            # Skip this check if alert monitoring is running
+            print(f"⏭️  Skipping interaction check (alert monitoring in progress)")
+            return
+
         # Use lock to prevent concurrent Claude queries
         async with self._client_lock:
             # Use separate time tracking for interactions
@@ -467,6 +473,7 @@ Text: [message text]
 If no human messages found, say "No interactions found"."""
 
             try:
+                print(f"🔄 Checking for interactions (last {seconds_ago}s)...")
                 await self.client.query(query)
 
                 response_text = ""
@@ -479,6 +486,8 @@ If no human messages found, say "No interactions found"."""
                 # Debug: Show what Claude said
                 if response_text and "No interactions found" not in response_text:
                     print(f"🔍 Interaction check response: {response_text[:200]}")
+                else:
+                    print(f"   No interactions found")
 
                 # Check if there are interactions
                 if "---INTERACTION---" in response_text:
