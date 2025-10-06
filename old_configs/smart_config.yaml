@@ -1,14 +1,12 @@
-# Unified Slack Monitor Configuration
-# Works with both standard and smart monitors
+# Smart Slack Monitor Configuration
+# This is an example - copy to smart_config.yaml and customize
 
 # Channels to monitor (supports wildcards)
 channels:
-  - "cslog-alertas*"  # All channels starting with cslog-alertas
+  - "cslog-alertas*"    # All channels starting with cslog-alertas
 
-# Channel to send summary/filtered alerts to
-summary_channel: "cslog-alertas-resumo"
-
-# Keywords that indicate important messages (Portuguese + English)
+# Keywords to search for (if not monitoring specific channels)
+# Copied from your config.py
 keywords:
   # Portuguese - Urgência
   - "urgente"
@@ -83,33 +81,32 @@ keywords:
 # How often to check for new messages (seconds)
 check_interval: 60  # 1 minute
 
-# Smart Monitor Settings (only used by smart monitor)
-smart_filtering:
-  # Enable smart filtering (dedup, pattern detection, etc.)
-  enabled: true
+# Where to send filtered alerts (set to null to disable)
+# This is the channel that will ONLY receive truly important alerts
+summary_channel: "cslog-alertas-resumo"
 
-  # Send full Claude analysis instead of filtered summary
-  # Set to true to see EVERYTHING Claude analyzes (for debugging/tuning)
-  # Set to false to only see filtered alerts that pass criteria
-  send_full_analysis: true  # ← Send complete report for now
-
+# Smart filtering settings
+filtering:
   # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
+  # Set to CRITICAL to only send the most urgent alerts
+  # Set to IMPORTANT to send both CRITICAL and IMPORTANT
   min_urgency_level: "IMPORTANT"
 
   # Don't resend similar alerts within this time window (hours)
+  # This prevents duplicate alerts from flooding the channel
   duplicate_window_hours: 24
 
-  # CRITICAL alerts use shorter dedup window (hours)
-  # Critical alerts are resent more frequently if issue persists
-  # Set to 0 to disable dedup for CRITICAL (always send)
-  # Set to 0.5 for 30 minutes, 1 for 1 hour, 2 for 2 hours, etc.
-  critical_dedup_hours: 0.5  # 30 minutes (was 2h - too aggressive!)
-
   # How many times must an issue occur before alerting
+  # Set to 1 to alert on first occurrence
+  # Set to 3 to only alert on recurrent issues
   recurrence_threshold: 3
 
   # Ask Claude for final decision on borderline cases
+  # This adds an extra layer of intelligence
   use_claude_decision: true
+
+# Database path for alert history
+database: "smart_alerts.db"
 
 # Advanced features
 advanced:
@@ -119,22 +116,16 @@ advanced:
   # Send startup notification to summary channel
   send_startup_notification: true
 
-  # Database paths
-  database: "slack_messages.db"           # Standard monitor
-  smart_database: "smart_alerts.db"       # Smart monitor
-
-  # Enable message persistence
-  persist: true
-
   # Enable detailed logging
   verbose: true
 
-  # Slack Webhook URL (alternative to MCP for sending messages)
-  # Get from: https://api.slack.com/apps → Your App → Incoming Webhooks
-  # More reliable than MCP channel lookup
-  slack_webhook_url: null  # Set to webhook URL if using webhooks
+  # Export statistics periodically
+  export_stats: true
+  stats_interval_hours: 24
 
-# Custom importance rules (guides Claude's analysis)
+# Custom importance rules (optional)
+# These guide Claude in understanding what's important for YOUR team
+# Copied from your config.py
 importance_rules: |
   Regras adicionais para determinar a importância das mensagens:
 
@@ -149,8 +140,19 @@ importance_rules: |
   9. Notificações de monitoramento (downtime, alta latência, etc.)
   10. Requests de aprovação urgente
 
-  Classificar como:
-  - CRÍTICO: Precisa de atenção imediata
-  - IMPORTANTE: Revisar em até 1 hora
-  - NORMAL: Revisar quando conveniente
-  - IGNORAR: Não relevante
+# Example scenarios:
+#
+# Scenario 1: Production-focused monitoring
+# - Set min_urgency_level to CRITICAL
+# - Set recurrence_threshold to 1 (alert immediately)
+# - Monitor only prod-* channels
+#
+# Scenario 2: Development team alerts
+# - Set min_urgency_level to IMPORTANT
+# - Set recurrence_threshold to 3 (reduce noise)
+# - Monitor all dev channels
+#
+# Scenario 3: Minimal noise
+# - Set min_urgency_level to CRITICAL
+# - Set duplicate_window_hours to 72
+# - Set recurrence_threshold to 5

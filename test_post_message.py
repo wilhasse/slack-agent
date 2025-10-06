@@ -27,7 +27,7 @@ async def test_post():
 
     options = ClaudeAgentOptions(
         mcp_servers={"slack": mcp_config},
-        allowed_tools=["mcp__slack__chat_postMessage", "mcp__slack__channels_list"],
+        allowed_tools=["mcp__slack__conversations_add_message", "mcp__slack__channels_list"],
         permission_mode="bypassPermissions"
     )
 
@@ -54,7 +54,7 @@ If you find it, tell me the channel ID and name.
     print("\n📤 Now trying to post to #cslog-alertas-resumo...")
 
     await client.query("""
-USE the mcp__slack__chat_postMessage tool to send a test message.
+USE the mcp__slack__conversations_add_message tool to send a test message.
 
 Post this message to the channel 'cslog-alertas-resumo':
 "🤖 Teste do Monitor de Slack - Mensagem de teste automática"

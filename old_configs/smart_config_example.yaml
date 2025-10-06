@@ -1,0 +1,122 @@
+# Smart Slack Monitor Configuration
+# This is an example - copy to smart_config.yaml and customize
+
+# Channels to monitor (supports wildcards)
+channels:
+  - "cslog-alertas*"    # All channels starting with cslog-alertas
+  - "prod-*"            # All production channels
+  - "incidents"         # Specific channel
+
+# Keywords to search for (if not monitoring specific channels)
+keywords:
+  # Portuguese
+  - "urgente"
+  - "crítico"
+  - "erro"
+  - "falha"
+  - "emergência"
+  - "ajuda"
+  - "alerta"
+
+  # English
+  - "urgent"
+  - "critical"
+  - "error"
+  - "failed"
+  - "emergency"
+  - "help"
+  - "alert"
+  - "down"
+  - "offline"
+  - "timeout"
+
+# How often to check for new messages (seconds)
+check_interval: 60  # 1 minute (60s) - adjust based on your needs
+
+# Where to send filtered alerts (set to null to disable)
+# This is the channel that will ONLY receive truly important alerts
+summary_channel: "cslog-alertas-summary"
+
+# Smart filtering settings
+filtering:
+  # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
+  # Set to CRITICAL to only send the most urgent alerts
+  # Set to IMPORTANT to send both CRITICAL and IMPORTANT
+  min_urgency_level: "IMPORTANT"
+
+  # Don't resend similar alerts within this time window (hours)
+  # This prevents duplicate alerts from flooding the channel
+  duplicate_window_hours: 24
+
+  # How many times must an issue occur before alerting
+  # Set to 1 to alert on first occurrence
+  # Set to 3 to only alert on recurrent issues
+  recurrence_threshold: 3
+
+  # Ask Claude for final decision on borderline cases
+  # This adds an extra layer of intelligence
+  use_claude_decision: true
+
+# Database path for alert history
+database: "smart_alerts.db"
+
+# Advanced features
+advanced:
+  # Enable desktop notifications (requires notify-send on Linux)
+  notifications: false
+
+  # Send "Monitor Started" message to summary channel on startup
+  send_startup_notification: true
+
+  # Enable detailed logging
+  verbose: true
+
+  # Export statistics periodically
+  export_stats: true
+  stats_interval_hours: 24
+
+# Custom importance rules (optional)
+# These guide Claude in understanding what's important for YOUR team
+importance_rules: |
+  Messages are CRITICAL if:
+  1. Contain "production down" or "prod offline"
+  2. Mention customer-impacting issues
+  3. Report security incidents
+  4. Contain "urgent" + "deploy" together
+  5. From channels matching "prod-*" with "error"
+
+  Messages are IMPORTANT if:
+  1. Deployment failures or rollbacks
+  2. API timeouts or 500 errors
+  3. Database connection issues
+  4. Recurrent errors (same type 3+ times)
+  5. Build failures on main branch
+
+  Messages are NORMAL if:
+  1. Informational status updates
+  2. Successful deployments
+  3. General team chat
+  4. Non-urgent questions
+
+  Messages should be IGNORED if:
+  1. Bot spam or automated reports
+  2. Test channel messages
+  3. Off-topic discussions
+  4. Social chat
+
+# Example scenarios:
+#
+# Scenario 1: Production-focused monitoring
+# - Set min_urgency_level to CRITICAL
+# - Set recurrence_threshold to 1 (alert immediately)
+# - Monitor only prod-* channels
+#
+# Scenario 2: Development team alerts
+# - Set min_urgency_level to IMPORTANT
+# - Set recurrence_threshold to 3 (reduce noise)
+# - Monitor all dev channels
+#
+# Scenario 3: Minimal noise
+# - Set min_urgency_level to CRITICAL
+# - Set duplicate_window_hours to 72
+# - Set recurrence_threshold to 5

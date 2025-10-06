@@ -10,6 +10,30 @@ Monitor your Slack workspace with AI-powered message analysis:
 - **Works in two modes**: Interactive chat or automated monitoring
 - **Integrates with Claude Code**: Talk to Slack directly in conversations
 
+## 🧠 NEW: Smart Monitor (Intelligent Alert Filtering)
+
+**Avoid channel pollution!** The Smart Monitor adds intelligent filtering to only send truly urgent and recurrent alerts:
+
+- 🎯 **Deduplication**: Never sends the same alert twice within configurable time window
+- 🔍 **Pattern Detection**: Identifies recurring issues and alerts after threshold is met
+- ⚡ **Urgency Filtering**: Only sends CRITICAL or IMPORTANT alerts (configurable)
+- 📊 **Historical Analysis**: Compares with previous alerts to reduce noise
+- 🤖 **Claude Decision**: AI-powered final decisions on borderline cases
+- 📈 **Statistics**: Track filtering efficiency (typically 90%+ filter rate)
+
+**Example**: 100 "API timeout" errors → Smart Monitor sends **1 alert** when it becomes recurrent, filters out the duplicates.
+
+**Quick Start**:
+```bash
+cp smart_config_example.yaml smart_config.yaml
+nano smart_config.yaml  # Configure your channels and thresholds
+./run_smart_monitor.sh  # Run with intelligent filtering
+```
+
+📖 **[Read the Smart Monitor Guide →](docs/SMART_MONITOR.md)**
+
+---
+
 ## ✨ Features
 
 - 🤖 **AI-Powered Analysis**: Claude analyzes message content and context
@@ -657,10 +681,13 @@ class CustomMonitor(SlackMonitor):
 # Interactive chat
 ./run_with_oauth.sh
 
-# Monitor once (test)
-./run_with_oauth.sh slack_monitor_yaml.py --once
+# 🧠 SMART MONITOR (Recommended - Intelligent Filtering)
+./run_smart_monitor.sh              # Run with intelligent filtering
+./run_smart_monitor.sh --once       # Test run
+./run_smart_monitor.sh --stats      # View filtering statistics
 
-# Monitor continuously
+# Standard monitor (sends all alerts)
+./run_with_oauth.sh slack_monitor_yaml.py --once
 ./run_with_oauth.sh slack_monitor_yaml.py
 
 # Advanced with notifications
@@ -673,15 +700,26 @@ python diagnose.py
 ./run_with_oauth.sh cli.py --stats
 ```
 
+### Which Monitor to Use?
+
+| Monitor | Best For | Alert Volume |
+|---------|----------|--------------|
+| **Smart Monitor** 🧠 | Production, reducing noise | Low (filtered) |
+| Standard Monitor | Logging everything | High (all alerts) |
+| Interactive Chat | Manual queries | On-demand |
+
 ### File Locations
 
 ```bash
 ~/.claude/settings.local.json  # Claude Code MCP config
 .env.oauth                     # OAuth token
-config.yaml                    # Monitor configuration
-slack_messages.db              # Message database (if enabled)
+config.yaml                    # Standard monitor configuration
+smart_config.yaml              # Smart monitor configuration
+slack_messages.db              # Standard monitor database
+smart_alerts.db                # Smart monitor database (with filtering data)
 venv/                          # Python virtual environment
 slack-mcp-server/              # MCP server binary
+docs/SMART_MONITOR.md          # Smart monitor documentation
 ```
 
 ---

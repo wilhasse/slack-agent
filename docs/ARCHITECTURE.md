@@ -66,7 +66,7 @@ This is an **AI-powered Slack monitoring system** that automatically reads messa
 │  Slack MCP Server                                            │
 │                                                              │
 │  Tool Used:                                                  │
-│  - chat_postMessage → Posts to #cslog-alertas-resumo       │
+│  - conversations_add_message → Posts to #cslog-alertas-resumo │
 └─────────────────────────────────────────────────────────────┘
                           ↓
                           ✓
@@ -120,7 +120,7 @@ This is an **AI-powered Slack monitoring system** that automatically reads messa
 - `conversations_history`: Read channel messages
 - `conversations_replies`: Read thread replies
 - `conversations_search_messages`: Search by keywords
-- `chat_postMessage`: Send messages to channels
+- `conversations_add_message`: Send messages to channels
 
 **Authentication**: OAuth Bot Token (`xoxb-...`)
 
@@ -186,7 +186,7 @@ SLACK_MCP_ADD_MESSAGE_TOOL=true  # Enable posting (disabled by default)
 
 2. **Claude** uses MCP tool:
    ```
-   mcp__slack__chat_postMessage(
+   mcp__slack__conversations_add_message(
      channel: "cslog-alertas-resumo",
      text: "[formatted summary]"
    )
@@ -194,7 +194,7 @@ SLACK_MCP_ADD_MESSAGE_TOOL=true  # Enable posting (disabled by default)
 
 3. **Slack MCP Server** calls Slack API:
    ```
-   POST https://slack.com/api/chat.postMessage
+   POST https://slack.com/api/conversations.add_message
    Authorization: Bearer xoxb-...
    ```
 

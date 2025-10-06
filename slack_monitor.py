@@ -102,7 +102,7 @@ class SlackMonitor:
 
         # Add posting tool if summary channel is configured
         if self.summary_channel:
-            allowed_tools.append("mcp__slack__chat_postMessage")
+            allowed_tools.append("mcp__slack__conversations_add_message")
 
         self.options = ClaudeAgentOptions(
             mcp_servers={"slack": mcp_server_config},
@@ -138,6 +138,17 @@ For each message, classify it as:
 - IMPORTANT: Should be reviewed soon
 - NORMAL: Can be reviewed later
 - IGNORE: Not relevant or spam
+
+⚠️ EMERGENCY ESCALATION:
+If a CRITICAL issue is:
+- CATASTROPHIC (system failure imminent)
+- RAPIDLY WORSENING (degrading quickly)
+- URGENT ACTION REQUIRED (immediate intervention needed)
+- TOP PRIORITY (overrides everything)
+
+Include these exact keywords in your Reason: "CATASTROPHIC", "URGENT ACTION REQUIRED", "IMMEDIATE", "TOP PRIORITY", "RAPID", or "EMERGENCY"
+
+This will trigger an emergency override to ensure the alert is sent immediately!
 
 Be concise and focus on actionable insights."""
 
@@ -255,7 +266,7 @@ If no messages are found, say so clearly."""
 
 _Gerado automaticamente pelo Monitor de Slack_"""
 
-        query = f"""USE the mcp__slack__chat_postMessage tool RIGHT NOW to send a message to the channel '{self.summary_channel}'.
+        query = f"""USE the mcp__slack__conversations_add_message tool RIGHT NOW to send a message to the channel '{self.summary_channel}'.
 
 IMPORTANT: Do NOT check if the channel exists first. Just send the message directly.
 
