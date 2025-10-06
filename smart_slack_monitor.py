@@ -520,7 +520,7 @@ If no human messages found, say "No interactions found"."""
             FROM alerts
             WHERE created_at > datetime('now', '-24 hours')
             ORDER BY created_at DESC
-            LIMIT 20
+            LIMIT 10
         """)
 
         recent_alerts = cursor.fetchall()
@@ -535,19 +535,14 @@ If no human messages found, say "No interactions found"."""
         context = "\n".join(context_parts)
 
         # Ask Claude to respond with context
-        response_query = f"""You are monitoring Slack alerts. A user asked you a question in the monitoring channel.
+        response_query = f"""Answer this question about recent alerts in 1-2 sentences:
 
-USER QUESTION: "{question}"
+QUESTION: "{question}"
 
-RECENT ALERTS CONTEXT:
+ALERTS CONTEXT:
 {context}
 
-Please provide a helpful, concise response (2-3 sentences max) that:
-1. Answers their question using the alert context
-2. Is friendly and professional
-3. Uses Portuguese if the question was in Portuguese
-
-Your response will be posted directly to Slack."""
+Be concise. Use Portuguese if question is in Portuguese."""
 
         try:
             await self.client.query(response_query)

@@ -104,7 +104,7 @@ smart_filtering:
 
   # How often to check for interactions in summary channel (seconds)
   # Faster checking = more responsive conversations (but more API calls)
-  interaction_check_interval: 5  # Check every 5 seconds for questions
+  interaction_check_interval: 2  # Check every 2 seconds for questions
 
   # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
   min_urgency_level: "IMPORTANT"
