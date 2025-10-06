@@ -151,6 +151,7 @@ async def run_monitor(config: dict, run_once: bool = False):
     recurrence_threshold = smart_filtering.get("recurrence_threshold", 3)
     send_full_analysis = smart_filtering.get("send_full_analysis", False)
     interactive_mode = smart_filtering.get("interactive_mode", False)
+    interaction_check_interval = smart_filtering.get("interaction_check_interval", 5)
 
     # Advanced options
     advanced = config.get("advanced", {})
@@ -170,6 +171,7 @@ async def run_monitor(config: dict, run_once: bool = False):
         critical_dedup_hours=critical_dedup,
         recurrence_threshold=recurrence_threshold,
         slack_webhook_url=webhook_url,
+        interaction_check_interval=interaction_check_interval,
     )
 
     # Store startup notification preference

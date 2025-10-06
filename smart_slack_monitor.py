@@ -59,6 +59,7 @@ class SmartSlackMonitor(SlackMonitor):
         critical_dedup_hours: int = 2,  # Resend CRITICAL alerts every 2h if still active
         recurrence_threshold: int = 3,  # Alert if same issue happens 3+ times
         slack_webhook_url: str = None,  # Alternative to MCP for sending messages
+        interaction_check_interval: int = 5,  # Check for interactions every 5 seconds
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -68,6 +69,8 @@ class SmartSlackMonitor(SlackMonitor):
         self.critical_dedup_hours = critical_dedup_hours
         self.recurrence_threshold = recurrence_threshold
         self.slack_webhook_url = slack_webhook_url
+        self.interaction_check_interval = interaction_check_interval
+        self.last_interaction_check = datetime.now()
 
         self._init_database()
 
@@ -434,9 +437,10 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         if not self.summary_channel or not self.client:
             return
 
-        minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
+        # Use separate time tracking for interactions
+        seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
 
-        query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {minutes_ago} minutes.
+        query = f"""USE Slack tools to check messages from #{self.summary_channel} in the last {seconds_ago} seconds.
 
 Look for messages that:
 1. Are questions or commands directed at the monitoring system
@@ -467,8 +471,13 @@ If no interactions found, just say "No interactions found"."""
                 print(f"💬 Found user interaction in #{self.summary_channel}")
                 await self._handle_interaction(response_text)
 
+            # Update last interaction check time
+            self.last_interaction_check = datetime.now()
+
         except Exception as e:
             print(f"⚠️ Error checking interactions: {e}")
+            # Still update check time to avoid getting stuck
+            self.last_interaction_check = datetime.now()
 
     async def _handle_interaction(self, interaction_text: str):
         """Respond to user questions with context from alert history"""
@@ -662,8 +671,8 @@ Reason: [why this matters]
             else:
                 print(f"\n✅ No alerts met sending criteria - keeping channel clean")
 
-        # Check for user interactions in summary channel
-        await self._check_for_interactions()
+        # Don't check interactions here - they're checked on a separate faster schedule
+        # in monitor_continuously()
 
         return []  # Return empty for compatibility
 
@@ -934,10 +943,29 @@ _Monitor is now active and filtering alerts intelligently..._"""
         except Exception as e:
             print(f"❌ Could not send startup notification: {e}")
 
+    async def _interaction_loop(self):
+        """Separate loop for checking interactions at faster interval"""
+        try:
+            while True:
+                try:
+                    if getattr(self, 'interactive_mode', False):
+                        await self._check_for_interactions()
+                    await asyncio.sleep(self.interaction_check_interval)
+                except KeyboardInterrupt:
+                    break
+                except Exception as e:
+                    print(f"❌ Error in interaction loop: {e}")
+                    await asyncio.sleep(self.interaction_check_interval)
+        except asyncio.CancelledError:
+            # Loop cancelled, exit gracefully
+            pass
+
     async def monitor_continuously(self):
-        """Override to add startup notification"""
+        """Override to add startup notification and separate interaction checking"""
         print(f"🔍 Starting Smart Slack Monitor...")
-        print(f"   Checking every {self.check_interval} seconds")
+        print(f"   Checking alerts every {self.check_interval} seconds")
+        if getattr(self, 'interactive_mode', False):
+            print(f"   Checking interactions every {self.interaction_check_interval} seconds")
         print(f"   Keywords: {', '.join(self.keywords)}")
         if self.channels_to_monitor:
             print(f"   Channels: {', '.join(self.channels_to_monitor)}")
@@ -952,6 +980,11 @@ _Monitor is now active and filtering alerts intelligently..._"""
         # Send startup notification
         await self._send_startup_notification()
 
+        # Start interaction loop as a separate task (if enabled)
+        interaction_task = None
+        if getattr(self, 'interactive_mode', False):
+            interaction_task = asyncio.create_task(self._interaction_loop())
+
         try:
             while True:
                 try:
@@ -963,6 +996,13 @@ _Monitor is now active and filtering alerts intelligently..._"""
                     print(f"❌ Error checking messages: {e}")
                     await asyncio.sleep(self.check_interval)
         finally:
+            # Cancel interaction task if running
+            if interaction_task:
+                interaction_task.cancel()
+                try:
+                    await interaction_task
+                except asyncio.CancelledError:
+                    pass
             await self.disconnect()
 
 
