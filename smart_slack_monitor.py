@@ -12,6 +12,8 @@ This enhanced monitor:
 import asyncio
 import json
 import hashlib
+import os
+import re
 import sqlite3
 import unicodedata
 from dataclasses import dataclass, field
@@ -154,10 +156,55 @@ class SmartSlackMonitor(SlackMonitor):
             "lookback_delta": timedelta(minutes=lookback_minutes),
             "max_alerts": max_alerts,
             "include_filtered": include_filtered,
+            "whatsapp": self._normalize_whatsapp_config(schedule.get("whatsapp")),
         }
 
         schedule_normalized["label"] = f"cada {interval_minutes} min (janela {lookback_minutes} min)"
         return schedule_normalized
+
+    @staticmethod
+    def _normalize_whatsapp_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Normalize WhatsApp delivery configuration."""
+        defaults = {
+            "enabled": False,
+            "service_file": "whatsapp.txt",
+            "account_sid": None,
+            "auth_token": None,
+            "auth_token_env": "TWILIO_AUTH_TOKEN",
+            "from_number": None,
+            "to_number": None,
+            "use_template": False,
+            "content_sid": None,
+        }
+
+        if not config:
+            return defaults
+
+        normalized = defaults.copy()
+        normalized.update({k: v for k, v in config.items() if v is not None})
+
+        def _resolve_env(value: Optional[str]) -> Optional[str]:
+            if not value or not isinstance(value, str):
+                return value
+            value = value.strip()
+            if value.startswith("${") and value.endswith("}"):
+                return os.getenv(value[2:-1])
+            return value
+
+        normalized["account_sid"] = _resolve_env(normalized.get("account_sid"))
+        normalized["auth_token"] = _resolve_env(normalized.get("auth_token"))
+        normalized["from_number"] = _resolve_env(normalized.get("from_number"))
+        normalized["to_number"] = _resolve_env(normalized.get("to_number"))
+        normalized["service_file"] = _resolve_env(normalized.get("service_file"))
+        normalized["content_sid"] = _resolve_env(normalized.get("content_sid"))
+
+        # Basic sanitation
+        for key in ("from_number", "to_number"):
+            number = normalized.get(key)
+            if number and not number.startswith("whatsapp:"):
+                normalized[key] = f"whatsapp:{number}"
+
+        return normalized
 
     def _parse_active_hours(
         self,
@@ -1568,6 +1615,98 @@ _Full report mode - showing Claude's complete analysis_"""
         except Exception as e:
             print(f"❌ Failed to send summary: {e}")
 
+    async def _send_whatsapp_digest(self, message: str):
+        """Send digest message via WhatsApp using Twilio API."""
+        whatsapp_cfg = self._summary_schedule.get("whatsapp", {})
+        if not whatsapp_cfg.get("enabled"):
+            return
+
+        service_file = whatsapp_cfg.get("service_file")
+        account_sid = whatsapp_cfg.get("account_sid")
+        from_number = whatsapp_cfg.get("from_number")
+        to_number = whatsapp_cfg.get("to_number")
+        auth_token = whatsapp_cfg.get("auth_token")
+        auth_token_env = whatsapp_cfg.get("auth_token_env", "TWILIO_AUTH_TOKEN")
+        use_template = whatsapp_cfg.get("use_template", False)
+        content_sid = whatsapp_cfg.get("content_sid")
+
+        if service_file and os.path.exists(service_file):
+            parsed = self._parse_whatsapp_service_file(service_file)
+            account_sid = account_sid or parsed.get("account_sid")
+            from_number = from_number or parsed.get("from")
+            to_number = to_number or parsed.get("to")
+            content_sid = content_sid or parsed.get("content_sid")
+
+        if not account_sid or not from_number or not to_number:
+            print("⚠️  Configuração WhatsApp incompleta; resumo não enviado por WhatsApp.")
+            return
+
+        if not auth_token:
+            auth_token = os.getenv(auth_token_env)
+
+        if not auth_token:
+            print("⚠️  Token de autenticação Twilio não encontrado; defina a variável de ambiente correspondente.")
+            return
+
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+
+        payload: Dict[str, Any]
+        if use_template and content_sid:
+            payload = {
+                "To": to_number,
+                "From": from_number,
+                "ContentSid": content_sid,
+                "ContentVariables": json.dumps({"1": message[:1600]}),
+            }
+        else:
+            payload = {
+                "To": to_number,
+                "From": from_number,
+                "Body": message[:1600],
+            }
+
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, data=payload, auth=(account_sid, auth_token))
+                if response.status_code in (200, 201):
+                    print("📨 Resumo enviado via WhatsApp")
+                else:
+                    print(f"⚠️  Falha ao enviar WhatsApp: {response.status_code} - {response.text[:200]}")
+        except Exception as error:
+            print(f"⚠️  Erro ao enviar WhatsApp: {error}")
+
+    @staticmethod
+    def _parse_whatsapp_service_file(path: str) -> Dict[str, Optional[str]]:
+        """Parse helper script (curl) to extract Twilio parameters."""
+        result = {"account_sid": None, "from": None, "to": None, "content_sid": None}
+
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                content = file.read()
+        except OSError:
+            return result
+
+        account_match = re.search(r"Accounts/([A-Za-z0-9]+)/Messages", content)
+        if account_match:
+            result["account_sid"] = account_match.group(1)
+
+        to_match = re.search(r"--data-urlencode 'To=([^']+)'", content)
+        if to_match:
+            to_value = to_match.group(1).strip()
+            result["to"] = to_value if to_value.startswith("whatsapp:") else f"whatsapp:{to_value}"
+
+        from_match = re.search(r"--data-urlencode 'From=([^']+)'", content)
+        if from_match:
+            from_value = from_match.group(1).strip()
+            result["from"] = from_value if from_value.startswith("whatsapp:") else f"whatsapp:{from_value}"
+
+        content_sid_match = re.search(r"--data-urlencode 'ContentSid=([^']+)'", content)
+        if content_sid_match:
+            result["content_sid"] = content_sid_match.group(1).strip()
+
+        return result
     async def _summary_loop(self):
         """Background loop that posts periodic digests."""
         if not self.summary_channel:
@@ -1688,6 +1827,7 @@ _Full report mode - showing Claude's complete analysis_"""
                 print(f"📨 Resumo automático enviado ({lookback_minutes}min, {total_alerts} alertas)")
             else:
                 print("❌ Falha ao enviar resumo automático")
+            await self._send_whatsapp_digest(digest_message)
         except Exception as error:
             print(f"❌ Erro ao enviar resumo automático: {error}")
 
