@@ -735,28 +735,32 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             # Calculate timestamp for filtering (only messages in last check window)
             oldest_timestamp = (datetime.now() - timedelta(seconds=seconds_ago)).timestamp()
 
-            query = f"""USE the mcp__slack__conversations_history tool to get messages from channel "{channel_ref}".
+            query = f"""Use mcp__slack__conversations_history to get messages from channel "{channel_ref}".
 
-IMPORTANT: Use the channel identifier EXACTLY as provided: "{channel_ref}"
+CRITICAL INSTRUCTIONS:
+1. Get messages with ts > {oldest_timestamp}
+2. Filter for human messages only (no bots)
+3. Respond ONLY in the exact format shown below - NO other text
 
-Look for ANY messages from human users in the response (NOT from bots or automated systems).
-
-CRITICAL: Only include messages with timestamp NEWER than {oldest_timestamp} (messages from the last {seconds_ago} seconds).
-
-Filter rules:
-- Include ONLY user messages from the last {seconds_ago} seconds
-- Ignore messages from bots (bot_id present or subtype: bot_message)
-- Ignore messages from the monitoring system itself
-- Ignore old messages that we've already processed
-
-For EACH NEW human user message found, respond with:
+RESPONSE FORMAT (use EXACTLY this format):
+If human messages found:
 ---INTERACTION---
-User: [username]
-Text: [message text]
-Timestamp: [message timestamp]
+User: <username>
+Text: <message text>
+Timestamp: <ts value>
 ---END INTERACTION---
 
-If no NEW human messages found, say "No interactions found"."""
+If NO human messages:
+No interactions found
+
+EXAMPLE of correct response:
+---INTERACTION---
+User: wil
+Text: Pode me atualizar os últimos alertas?
+Timestamp: 1760031500.123456
+---END INTERACTION---
+
+DO NOT add explanations. DO NOT describe what you're doing. ONLY output the format above."""
 
             try:
                 print(f"🔄 Checking for interactions (last {seconds_ago}s)...")

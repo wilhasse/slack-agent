@@ -121,7 +121,7 @@ smart_filtering:
 # Periodic summary mode (automatic digest in summary channel)
 smart_summary:
   enabled: true
-  interval_minutes: 30
+  interval_minutes: 30  # Send digest every 30 minutes
   lookback_minutes: 30
   max_alerts: 8
   include_filtered: true
