@@ -1639,6 +1639,7 @@ _Full report mode - showing Claude's complete analysis_"""
             from_number = from_number or parsed.get("from")
             to_number = to_number or parsed.get("to")
             content_sid = content_sid or parsed.get("content_sid")
+            auth_token = auth_token or parsed.get("auth_token")
 
         if not account_sid or not from_number or not to_number:
             print("⚠️  Configuração WhatsApp incompleta; resumo não enviado por WhatsApp.")
@@ -1708,6 +1709,13 @@ _Full report mode - showing Claude's complete analysis_"""
         content_sid_match = re.search(r"--data-urlencode 'ContentSid=([^']+)'", content)
         if content_sid_match:
             result["content_sid"] = content_sid_match.group(1).strip()
+
+        credential_match = re.search(r"-u\s+([A-Za-z0-9]+):([^\\s]+)", content)
+        if credential_match:
+            result["account_sid"] = credential_match.group(1)
+            token = credential_match.group(2)
+            if token and not token.startswith("["):
+                result["auth_token"] = token
 
         return result
     async def _summary_loop(self):
