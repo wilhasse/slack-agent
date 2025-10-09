@@ -161,6 +161,9 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
         if start_hour and end_hour:
             active_hours = {"start": str(start_hour), "end": str(end_hour)}
 
+    summary_config = config.get("smart_summary", {})
+    summary_schedule = summary_config if isinstance(summary_config, dict) else None
+
     # Advanced options
     advanced = config.get("advanced", {})
     db_path = advanced.get("smart_database", advanced.get("database", "smart_alerts.db"))
@@ -186,6 +189,7 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
         slack_webhook_url=webhook_url,
         interaction_check_interval=interaction_check_interval,
         active_hours=active_hours,
+        summary_schedule=summary_schedule,
         config=config_obj,  # Pass config for channel-specific rules
     )
 
@@ -229,6 +233,12 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
         print(f"   Active hours:           {active_hours['start']} -> {active_hours['end']} (local)")
     else:
         print(f"   Active hours:           24h (monitoramento contínuo)")
+    if summary_schedule and summary_schedule.get("enabled"):
+        interval = summary_schedule.get("interval_minutes", 60)
+        lookback = summary_schedule.get("lookback_minutes", 60)
+        print(f"   Digest schedule:        {interval} min (janela {lookback} min)")
+    else:
+        print(f"   Digest schedule:        disabled")
 
     print(f"\n🎯 Filtering Rules:")
     if send_full_analysis:

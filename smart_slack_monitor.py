@@ -69,6 +69,7 @@ class SmartSlackMonitor(SlackMonitor):
         slack_webhook_url: str = None,  # Alternative to MCP for sending messages
         interaction_check_interval: int = 5,  # Check for interactions every 5 seconds
         active_hours: Optional[Dict[str, str]] = None,  # Optional active monitoring window
+        summary_schedule: Optional[Dict[str, Any]] = None,  # Periodic summary configuration
         config: Config = None,  # Configuration with channel rules
         **kwargs
     ):
@@ -91,6 +92,9 @@ class SmartSlackMonitor(SlackMonitor):
         self._summary_channel_ref = self._coerce_channel_reference(getattr(self, "summary_channel", None))
         self._active_hours, self._active_hours_label = self._parse_active_hours(active_hours)
         self._outside_hours_logged = False
+        self._summary_schedule = self._prepare_summary_schedule(summary_schedule)
+        self._summary_schedule_label = self._summary_schedule.get("label")
+        self._summary_task: Optional[asyncio.Task] = None
 
         self._init_database()
 
@@ -107,6 +111,53 @@ class SmartSlackMonitor(SlackMonitor):
         if self._summary_channel_id:
             return self._summary_channel_id
         return self._summary_channel_ref
+
+    def _prepare_summary_schedule(self, schedule: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Normalize summary schedule configuration."""
+        default_schedule = {
+            "enabled": False,
+            "interval_minutes": 60,
+            "lookback_minutes": 60,
+            "max_alerts": 10,
+            "include_filtered": False,
+        }
+
+        if not schedule:
+            return default_schedule
+
+        enabled = bool(schedule.get("enabled", False))
+        interval_minutes = schedule.get("interval_minutes", default_schedule["interval_minutes"])
+        lookback_minutes = schedule.get("lookback_minutes", default_schedule["lookback_minutes"])
+        max_alerts = schedule.get("max_alerts", default_schedule["max_alerts"])
+        include_filtered = bool(schedule.get("include_filtered", default_schedule["include_filtered"]))
+
+        try:
+            interval_minutes = max(5, int(interval_minutes))
+        except (TypeError, ValueError):
+            interval_minutes = default_schedule["interval_minutes"]
+
+        try:
+            lookback_minutes = max(5, int(lookback_minutes))
+        except (TypeError, ValueError):
+            lookback_minutes = default_schedule["lookback_minutes"]
+
+        try:
+            max_alerts = max(3, int(max_alerts))
+        except (TypeError, ValueError):
+            max_alerts = default_schedule["max_alerts"]
+
+        schedule_normalized = {
+            "enabled": enabled,
+            "interval_minutes": interval_minutes,
+            "interval_seconds": interval_minutes * 60,
+            "lookback_minutes": lookback_minutes,
+            "lookback_delta": timedelta(minutes=lookback_minutes),
+            "max_alerts": max_alerts,
+            "include_filtered": include_filtered,
+        }
+
+        schedule_normalized["label"] = f"cada {interval_minutes} min (janela {lookback_minutes} min)"
+        return schedule_normalized
 
     def _parse_active_hours(
         self,
@@ -1517,6 +1568,129 @@ _Full report mode - showing Claude's complete analysis_"""
         except Exception as e:
             print(f"❌ Failed to send summary: {e}")
 
+    async def _summary_loop(self):
+        """Background loop that posts periodic digests."""
+        if not self.summary_channel:
+            print("⚠️  Digest mode habilitado, mas summary_channel não está configurado.")
+            return
+
+        interval = self._summary_schedule["interval_seconds"]
+        # Initial wait to avoid immediate double post on startup
+        await asyncio.sleep(interval)
+
+        while True:
+            try:
+                now_local = datetime.now(self._local_timezone)
+                if not self._active_hours or self._is_within_active_hours(now_local.time()):
+                    await self._send_digest_summary(now_local)
+                else:
+                    next_start = self._get_next_active_start(now_local)
+                    if next_start:
+                        wait_seconds = max(60, (next_start - now_local).total_seconds())
+                        print(f"⏸️  Resumo periódico aguardando próxima janela ativa ({self._active_hours_label}) em {wait_seconds/60:.1f} min")
+                        await asyncio.sleep(wait_seconds)
+                        continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                print(f"⚠️  Erro no resumo periódico: {error}")
+
+            await asyncio.sleep(interval)
+
+    async def _send_digest_summary(self, reference_time: Optional[datetime] = None):
+        """Send a digest of alerts observed within the configured lookback window."""
+        if not self.summary_channel:
+            return
+
+        schedule = self._summary_schedule
+        if not schedule.get("enabled"):
+            return
+
+        lookback_minutes = schedule["lookback_minutes"]
+        max_alerts = schedule["max_alerts"]
+        include_filtered = schedule["include_filtered"]
+        lookback_clause = f"-{lookback_minutes} minutes"
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT channel, text, importance, reason, created_at, sent_to_slack
+            FROM alerts
+            WHERE created_at >= datetime('now', ?)
+            ORDER BY created_at DESC
+            """,
+            (lookback_clause,)
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        now_local = reference_time or datetime.now(self._local_timezone)
+        header_time = now_local.strftime('%d/%m %H:%M')
+
+        total_alerts = len(rows)
+        sent_count = sum(1 for row in rows if row[5])
+        filtered_count = total_alerts - sent_count
+        critical_count = sum(1 for row in rows if row[2] == "CRITICAL")
+        important_count = sum(1 for row in rows if row[2] == "IMPORTANT")
+
+        message_lines: List[str] = [
+            f"🕒 *Resumo automático - {header_time}*",
+            f"Período analisado: últimas {lookback_minutes} minutos",
+            f"Total de alertas processados: {total_alerts} (enviados: {sent_count} | filtrados: {filtered_count})",
+        ]
+
+        if critical_count or important_count:
+            counts = []
+            if critical_count:
+                counts.append(f"🚨 {critical_count} crítico(s)")
+            if important_count:
+                counts.append(f"⚠️ {important_count} importante(s)")
+            message_lines.append("Classificação: " + ", ".join(counts))
+        else:
+            message_lines.append("Classificação: Nenhum alerta CRÍTICO/IMPORTANTE no período.")
+
+        if total_alerts == 0:
+            message_lines.append("\n✅ Nenhum novo alerta registrado no período.")
+        else:
+            message_lines.append("\n📌 Destaques recentes:")
+            listed = 0
+            for channel, text, importance, reason, created_at, sent_to_slack in rows:
+                if listed >= max_alerts:
+                    break
+                if not include_filtered and not sent_to_slack:
+                    continue
+
+                created_dt = self._parse_db_timestamp(created_at)
+                time_str = self._format_local_time(created_dt, include_date=False) or created_at
+                clean_text = " ".join((text or "").split())
+                if len(clean_text) > 90:
+                    clean_text = clean_text[:90] + "..."
+
+                status = "enviado" if sent_to_slack else "filtrado"
+                status_icon = "✅" if sent_to_slack else "⏳"
+                message_lines.append(f"{status_icon} {time_str} · #{channel} · [{importance}] · {clean_text} ({status})")
+                if reason:
+                    message_lines.append(f"   • Motivo Claude: {reason}")
+                listed += 1
+
+            if listed == 0:
+                message_lines.append("Nenhum alerta enviado no período.")
+
+        message_lines.append("\n_Modo resumo periódico ativo_")
+
+        digest_message = "\n".join(message_lines)
+
+        try:
+            if await self._send_to_slack(digest_message):
+                print(f"📨 Resumo automático enviado ({lookback_minutes}min, {total_alerts} alertas)")
+            else:
+                print("❌ Falha ao enviar resumo automático")
+        except Exception as error:
+            print(f"❌ Erro ao enviar resumo automático: {error}")
+
     def get_statistics(self, hours: int = 24) -> Dict[str, Any]:
         """Get statistics about alerts and filtering"""
         conn = sqlite3.connect(self.db_path)
@@ -1832,6 +2006,10 @@ _Monitor is now active and filtering alerts intelligently..._"""
             print(f"   Active hours: {self._active_hours_label} (horário local)")
         else:
             print(f"   Active hours: 24h (monitoramento contínuo)")
+        if self._summary_schedule.get("enabled"):
+            print(f"   Resumo periódico: {self._summary_schedule_label}")
+        else:
+            print(f"   Resumo periódico: desabilitado")
         print()
 
         await self.connect()
@@ -1843,6 +2021,13 @@ _Monitor is now active and filtering alerts intelligently..._"""
         interaction_task = None
         if getattr(self, 'interactive_mode', False):
             interaction_task = asyncio.create_task(self._interaction_loop())
+
+        summary_task = None
+        if self._summary_schedule.get("enabled"):
+            if self.summary_channel:
+                summary_task = asyncio.create_task(self._summary_loop())
+            else:
+                print("⚠️  Resumo periódico habilitado, mas summary_channel não está definido; recurso ignorado.")
 
         try:
             while True:
@@ -1860,6 +2045,12 @@ _Monitor is now active and filtering alerts intelligently..._"""
                 interaction_task.cancel()
                 try:
                     await interaction_task
+                except asyncio.CancelledError:
+                    pass
+            if summary_task:
+                summary_task.cancel()
+                try:
+                    await summary_task
                 except asyncio.CancelledError:
                     pass
             await self.disconnect()
