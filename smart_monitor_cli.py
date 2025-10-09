@@ -134,7 +134,7 @@ async def clear_old_alerts(monitor: SmartSlackMonitor, days: int = 30):
     conn.close()
 
 
-async def run_monitor(config: dict, run_once: bool = False):
+async def run_monitor(config: dict, config_file: str, run_once: bool = False):
     """Run the smart monitor"""
 
     # Extract config
@@ -153,6 +153,13 @@ async def run_monitor(config: dict, run_once: bool = False):
     send_full_analysis = smart_filtering.get("send_full_analysis", False)
     interactive_mode = smart_filtering.get("interactive_mode", False)
     interaction_check_interval = smart_filtering.get("interaction_check_interval", 5)
+    active_hours_config = smart_filtering.get("active_hours", {})
+    active_hours = None
+    if isinstance(active_hours_config, dict):
+        start_hour = active_hours_config.get("start")
+        end_hour = active_hours_config.get("end")
+        if start_hour and end_hour:
+            active_hours = {"start": str(start_hour), "end": str(end_hour)}
 
     # Advanced options
     advanced = config.get("advanced", {})
@@ -160,6 +167,10 @@ async def run_monitor(config: dict, run_once: bool = False):
     send_startup = advanced.get("send_startup_notification", True)
     startup_summary_hours = advanced.get("startup_summary_hours", 1)
     webhook_url = advanced.get("slack_webhook_url")
+
+    # Load Config object for channel-specific rules
+    from config_loader import Config
+    config_obj = Config(config_file)
 
     # Create monitor
     monitor = SmartSlackMonitor(
@@ -174,6 +185,8 @@ async def run_monitor(config: dict, run_once: bool = False):
         recurrence_threshold=recurrence_threshold,
         slack_webhook_url=webhook_url,
         interaction_check_interval=interaction_check_interval,
+        active_hours=active_hours,
+        config=config_obj,  # Pass config for channel-specific rules
     )
 
     # Store startup notification preference
@@ -212,6 +225,10 @@ async def run_monitor(config: dict, run_once: bool = False):
         print(f"   Summary channel:        #{summary_channel}")
     else:
         print(f"   Summary channel:        Not configured (alerts will be displayed only)")
+    if active_hours:
+        print(f"   Active hours:           {active_hours['start']} -> {active_hours['end']} (local)")
+    else:
+        print(f"   Active hours:           24h (monitoramento contínuo)")
 
     print(f"\n🎯 Filtering Rules:")
     if send_full_analysis:
@@ -362,7 +379,7 @@ async def main():
         return
 
     # Normal monitoring mode
-    await run_monitor(config, run_once=args.once)
+    await run_monitor(config, args.config, run_once=args.once)
 
 
 if __name__ == "__main__":

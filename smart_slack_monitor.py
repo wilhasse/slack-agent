@@ -13,13 +13,14 @@ import asyncio
 import json
 import hashlib
 import sqlite3
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Set, Optional
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone, time
 from pathlib import Path
-from dataclasses import dataclass, asdict
-from collections import defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
 from slack_monitor import SlackMonitor, SlackMessage
+from config_loader import Config
 
 
 @dataclass
@@ -29,15 +30,22 @@ class Alert:
     channel: str
     user: str
     text: str
-    timestamp: str
+    timestamp: Optional[str]
     importance: str
     reason: str
     content_hash: str
     pattern_signature: str
-    sent_to_slack: bool = False
-    first_seen: str = None
-    last_seen: str = None
+    slack_ts: Optional[str] = None
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
     occurrence_count: int = 1
+    first_seen_dt: Optional[datetime] = None
+    last_seen_dt: Optional[datetime] = None
+    insights: Optional[Dict[str, str]] = None
+    history_entries: List[Dict[str, Any]] = field(default_factory=list)
+    history_context: Optional[str] = None
+    escalation_reason: Optional[str] = None
+    sent_to_slack: bool = False
 
 
 class SmartSlackMonitor(SlackMonitor):
@@ -57,9 +65,11 @@ class SmartSlackMonitor(SlackMonitor):
         min_urgency_level: str = "IMPORTANT",  # Only send IMPORTANT or CRITICAL
         duplicate_window_hours: int = 24,  # Don't resend similar alerts within 24h
         critical_dedup_hours: int = 2,  # Resend CRITICAL alerts every 2h if still active
-        recurrence_threshold: int = 3,  # Alert if same issue happens 3+ times
+        recurrence_threshold: int = 3,  # Alert if same issue happens 3+ times (default fallback)
         slack_webhook_url: str = None,  # Alternative to MCP for sending messages
         interaction_check_interval: int = 5,  # Check for interactions every 5 seconds
+        active_hours: Optional[Dict[str, str]] = None,  # Optional active monitoring window
+        config: Config = None,  # Configuration with channel rules
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -67,15 +77,107 @@ class SmartSlackMonitor(SlackMonitor):
         self.min_urgency_level = min_urgency_level
         self.duplicate_window_hours = duplicate_window_hours
         self.critical_dedup_hours = critical_dedup_hours
-        self.recurrence_threshold = recurrence_threshold
+        self.recurrence_threshold = recurrence_threshold  # Default fallback
         self.slack_webhook_url = slack_webhook_url
         self.interaction_check_interval = max(1, interaction_check_interval)
         self.last_interaction_check = datetime.now() - timedelta(seconds=self.interaction_check_interval)
         self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
         self._summary_channel_id = None  # Cache channel ID for faster lookups
         self._responded_messages = set()  # Track which messages we've already responded to
+        self.config = config  # Store config for channel-specific rules
+        tzinfo = datetime.now().astimezone().tzinfo
+        self._local_timezone = tzinfo if tzinfo else timezone.utc
+        self._initial_cycle_completed = False
+        self._summary_channel_ref = self._coerce_channel_reference(getattr(self, "summary_channel", None))
+        self._active_hours, self._active_hours_label = self._parse_active_hours(active_hours)
+        self._outside_hours_logged = False
 
         self._init_database()
+
+    @staticmethod
+    def _coerce_channel_reference(channel: Optional[str]) -> Optional[str]:
+        """Return channel identifier without leading # when using names."""
+        if not channel:
+            return None
+        channel = channel.strip()
+        return channel[1:] if channel.startswith("#") else channel
+
+    def _get_summary_channel_reference(self) -> Optional[str]:
+        """Prefer cached channel ID, fallback to sanitized channel name."""
+        if self._summary_channel_id:
+            return self._summary_channel_id
+        return self._summary_channel_ref
+
+    def _parse_active_hours(
+        self,
+        active_hours: Optional[Dict[str, str]],
+    ) -> Tuple[Optional[Tuple[time, time]], Optional[str]]:
+        """Validate and parse active hours window from configuration."""
+        if not active_hours:
+            return None, None
+
+        start_raw = active_hours.get("start")
+        end_raw = active_hours.get("end")
+
+        if not start_raw or not end_raw:
+            return None, None
+
+        try:
+            start_time = datetime.strptime(str(start_raw), "%H:%M").time()
+            end_time = datetime.strptime(str(end_raw), "%H:%M").time()
+        except ValueError:
+            print(f"⚠️  Horário inválido em active_hours: start={start_raw}, end={end_raw}")
+            return None, None
+
+        label = f"{start_raw}-{end_raw}"
+        return (start_time, end_time), label
+
+    def _is_within_active_hours(self, current_time: time) -> bool:
+        """Return True if current_time falls within configured active window."""
+        if not self._active_hours:
+            return True
+
+        start, end = self._active_hours
+
+        if start == end:
+            # Treat identical times as 24h monitoring
+            return True
+
+        if start <= end:
+            return start <= current_time < end
+
+        # Window spans midnight (e.g., 22:00 - 06:00)
+        return current_time >= start or current_time < end
+
+    def _get_next_active_start(self, now_local: datetime) -> Optional[datetime]:
+        """Compute the next datetime when monitoring becomes active."""
+        if not self._active_hours:
+            return None
+
+        start, end = self._active_hours
+        current_time = now_local.time()
+
+        start_dt = datetime.combine(now_local.date(), start).replace(tzinfo=self._local_timezone)
+
+        if self._is_within_active_hours(current_time):
+            return now_local
+
+        if start <= end:
+            if current_time < start:
+                return start_dt
+            # After end -> next day
+            return start_dt + timedelta(days=1)
+
+        # Overnight window. Outside happens between end and start.
+        if current_time < start and current_time >= end:
+            return start_dt
+
+        if current_time >= start:
+            # Already past start (shouldn't happen here), next day to be safe
+            return start_dt + timedelta(days=1)
+
+        # current_time < end -> we are before end portion (still active), but fallback
+        return start_dt
 
     def _init_database(self):
         """Initialize database for alert tracking"""
@@ -142,30 +244,47 @@ class SmartSlackMonitor(SlackMonitor):
 
     def _extract_pattern_signature(self, text: str, channel: str) -> str:
         """
-        Extract a pattern signature from the message.
+        Extract a pattern signature from the message using channel-specific patterns.
 
-        This identifies the "type" of alert (e.g., "API timeout in prod-alerts")
+        This identifies the "type" of alert (e.g., "LOAD alert in cslog-alertas-mc")
         regardless of specific details.
         """
-        # Extract key terms (you can make this smarter)
         text_lower = text.lower()
-
-        # Common error patterns
         patterns = []
-        if "error" in text_lower or "erro" in text_lower:
-            patterns.append("error")
-        if "timeout" in text_lower:
-            patterns.append("timeout")
-        if "failed" in text_lower or "falha" in text_lower:
-            patterns.append("failed")
-        if "down" in text_lower or "offline" in text_lower:
-            patterns.append("down")
-        if "api" in text_lower:
-            patterns.append("api")
-        if "database" in text_lower or "db" in text_lower:
-            patterns.append("database")
-        if "deploy" in text_lower:
-            patterns.append("deploy")
+
+        # If config is available, use channel-specific patterns
+        if self.config:
+            # Check for channel-specific pattern matches
+            pattern_match = self.config.get_pattern_match(channel, text)
+            if pattern_match['matched']:
+                # Use the specific pattern name
+                patterns.append(pattern_match['pattern_name'].lower().replace(' ', '-'))
+
+            # Also check channel's patterns_to_watch
+            channel_rule = self.config.get_channel_rule(channel)
+            patterns_to_watch = channel_rule.get('patterns_to_watch', [])
+            for pattern in patterns_to_watch:
+                if pattern.lower() in text_lower:
+                    patterns.append(pattern.lower())
+
+        # Fallback to generic patterns if no specific patterns found
+        if not patterns:
+            if "error" in text_lower or "erro" in text_lower:
+                patterns.append("error")
+            if "timeout" in text_lower:
+                patterns.append("timeout")
+            if "failed" in text_lower or "falha" in text_lower:
+                patterns.append("failed")
+            if "down" in text_lower or "offline" in text_lower:
+                patterns.append("down")
+            if "load" in text_lower:
+                patterns.append("load")
+            if "memory" in text_lower or "memória" in text_lower:
+                patterns.append("memory")
+            if "database" in text_lower or "db" in text_lower:
+                patterns.append("database")
+            if "lock" in text_lower:
+                patterns.append("lock")
 
         signature = f"{channel}:{'-'.join(sorted(patterns)) if patterns else 'general'}"
         return signature
@@ -197,7 +316,7 @@ class SmartSlackMonitor(SlackMonitor):
 
         # Check if pattern exists
         cursor.execute("""
-            SELECT id, first_seen, occurrence_count, last_sent
+            SELECT id, first_seen, last_seen, occurrence_count, last_sent
             FROM patterns
             WHERE pattern_signature = ?
         """, (pattern_signature,))
@@ -206,8 +325,9 @@ class SmartSlackMonitor(SlackMonitor):
 
         if result:
             # Update existing pattern
-            pattern_id, first_seen, count, last_sent = result
+            pattern_id, first_seen, last_seen, count, last_sent = result
             new_count = count + 1
+            now_utc = datetime.now(timezone.utc).isoformat()
 
             cursor.execute("""
                 UPDATE patterns
@@ -220,9 +340,11 @@ class SmartSlackMonitor(SlackMonitor):
                 "is_new": False,
                 "occurrence_count": new_count,
                 "first_seen": first_seen,
+                "last_seen": now_utc,
                 "last_sent": last_sent
             }
         else:
+            now_utc = datetime.now(timezone.utc).isoformat()
             # New pattern
             cursor.execute("""
                 INSERT INTO patterns (pattern_signature, first_seen, last_seen)
@@ -232,7 +354,8 @@ class SmartSlackMonitor(SlackMonitor):
             pattern_info = {
                 "is_new": True,
                 "occurrence_count": 1,
-                "first_seen": datetime.now().isoformat(),
+                "first_seen": now_utc,
+                "last_seen": now_utc,
                 "last_sent": None
             }
 
@@ -306,12 +429,68 @@ class SmartSlackMonitor(SlackMonitor):
 
     async def _should_send_alert(self, alert: Alert, pattern_info: Dict[str, Any]) -> tuple[bool, str]:
         """
-        Intelligently decide if this alert should be sent to Slack.
+        Intelligently decide if this alert should be sent to Slack using channel-specific rules.
 
         Returns: (should_send, reason)
         """
+        pattern_match_info: Dict[str, Any] = {'matched': False}
+
+        # Rule 0: Check ignore patterns first (channel-specific)
+        if self.config:
+            should_ignore, ignore_reason = self.config.should_ignore_pattern(alert.channel, alert.text)
+            if should_ignore:
+                return False, f"🚫 Ignored: {ignore_reason}"
+
+        # Rule 0.5: Capture pattern metadata (importance overrides, custom thresholds)
+        if self.config:
+            pattern_match_info = self.config.get_pattern_match(alert.channel, alert.text)
+            if pattern_match_info['matched'] and pattern_match_info.get('min_importance'):
+                required_importance = pattern_match_info['min_importance']
+                if alert.importance != required_importance:
+                    return False, f"Pattern requires {required_importance} but alert is {alert.importance}"
+
+        # Determine recurrence threshold (channel and pattern specific)
+        required_threshold = self.recurrence_threshold  # Default fallback
+        if self.config:
+            # Prefer the explicit pattern name for threshold lookup when available
+            pattern_key = None
+            if pattern_match_info.get('matched'):
+                pattern_key = pattern_match_info.get('pattern_name')
+            required_threshold = self.config.get_recurrence_threshold(
+                alert.channel,
+                pattern_match=pattern_key or alert.pattern_signature
+            )
+
+        # Track whether recurrence should override normal filtering
+        recurrence_triggered = False
+        recurrence_reason = ""
+        recurrence_block_reason = ""
+
+        if pattern_info["occurrence_count"] >= required_threshold:
+            recurrence_reason = f"Recurrent issue ({pattern_info['occurrence_count']} occurrences)"
+
+            if pattern_info["last_sent"]:
+                try:
+                    last_sent = datetime.fromisoformat(pattern_info["last_sent"])
+                    hours_since = (datetime.now() - last_sent).total_seconds() / 3600
+                except ValueError:
+                    last_sent = None
+
+                if last_sent:
+                    if hours_since < self.duplicate_window_hours:
+                        recurrence_block_reason = f"Pattern already sent {hours_since:.1f}h ago"
+                    else:
+                        recurrence_triggered = True
+                else:
+                    recurrence_triggered = True
+            else:
+                recurrence_triggered = True
+
         # Rule 1: Only send if meets minimum urgency
-        if alert.importance == "NORMAL" or alert.importance == "IGNORE":
+        if alert.importance in {"NORMAL", "IGNORE"}:
+            if recurrence_triggered and self.min_urgency_level != "CRITICAL":
+                escalation_note = f"(escalated from {alert.importance})"
+                return True, f"{recurrence_reason} {escalation_note}".strip()
             return False, f"Below minimum urgency ({self.min_urgency_level})"
 
         if self.min_urgency_level == "CRITICAL" and alert.importance != "CRITICAL":
@@ -353,20 +532,13 @@ class SmartSlackMonitor(SlackMonitor):
                 return True, "Critical alert - sending (dedup disabled for CRITICAL)"
 
         # Rule 3: Skip if duplicate within full time window (for IMPORTANT and below)
-        if self._is_duplicate(alert.content_hash):
-            return False, f"Duplicate alert within {self.duplicate_window_hours}h window"
+        if alert.importance != "CRITICAL" and not recurrence_triggered:
+            if self._is_duplicate(alert.content_hash):
+                return False, f"Duplicate alert within {self.duplicate_window_hours}h window"
 
-        # Rule 4: For IMPORTANT - check if it's a recurrent pattern
-        if pattern_info["occurrence_count"] >= self.recurrence_threshold:
-            # Check if we recently sent this pattern
-            if pattern_info["last_sent"]:
-                last_sent = datetime.fromisoformat(pattern_info["last_sent"])
-                hours_since = (datetime.now() - last_sent).total_seconds() / 3600
-
-                if hours_since < self.duplicate_window_hours:
-                    return False, f"Pattern already sent {hours_since:.1f}h ago"
-
-            return True, f"Recurrent issue ({pattern_info['occurrence_count']} occurrences)"
+        # Rule 4: If recurrence triggered, allow escalation (deduplicated above)
+        if recurrence_triggered:
+            return True, recurrence_reason
 
         # Rule 5: For new important issues - ask Claude for final decision
         if pattern_info["is_new"]:
@@ -377,7 +549,10 @@ class SmartSlackMonitor(SlackMonitor):
             else:
                 return False, "Claude determined this is not urgent enough"
 
-        return False, f"Not recurrent enough ({pattern_info['occurrence_count']} occurrences)"
+        if recurrence_block_reason:
+            return False, recurrence_block_reason
+
+        return False, f"Not recurrent enough ({pattern_info['occurrence_count']}/{required_threshold} occurrences)"
 
     async def _ask_claude_for_decision(self, alert: Alert, pattern_info: Dict[str, Any]) -> bool:
         """
@@ -435,6 +610,9 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         if not self.summary_channel or not self.client:
             return
 
+        if self._active_hours and not self._is_within_active_hours(datetime.now(self._local_timezone).time()):
+            return
+
         # Try to acquire lock, but don't wait if alerts are being checked
         if self._client_lock.locked():
             # Skip this check if alert monitoring is running
@@ -449,7 +627,9 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
                 seconds_ago = self.interaction_check_interval
 
             # Use cached channel ID if available (much faster!)
-            channel_ref = self._summary_channel_id if self._summary_channel_id else self.summary_channel
+            channel_ref = self._get_summary_channel_reference()
+            if not channel_ref:
+                return
 
             # Calculate timestamp for filtering (only messages in last check window)
             oldest_timestamp = (datetime.now() - timedelta(seconds=seconds_ago)).timestamp()
@@ -550,7 +730,7 @@ If no NEW human messages found, say "No interactions found"."""
         conn.close()
 
         # Build context for Claude
-        context_parts = ["Recent alerts (last 24h):"]
+        context_parts = ["Alertas recentes (últimas 24h):"]
         for channel, text, importance, reason, created_at in recent_alerts:
             preview = text[:100] if text else ""
             context_parts.append(f"- [{importance}] #{channel}: {preview}")
@@ -558,14 +738,14 @@ If no NEW human messages found, say "No interactions found"."""
         context = "\n".join(context_parts)
 
         # Ask Claude to respond with context
-        response_query = f"""Answer this question about recent alerts in 1-2 sentences:
+        response_query = f"""Responda à pergunta abaixo sobre os alertas recentes em no máximo duas frases, em Português do Brasil:
 
 QUESTION: "{question}"
 
 ALERTS CONTEXT:
 {context}
 
-Be concise. Use Portuguese if question is in Portuguese."""
+Seja direto, cite o status atual se conhecido e indique a próxima ação recomendada."""
 
         try:
             await self.client.query(response_query)
@@ -602,6 +782,22 @@ Be concise. Use Portuguese if question is in Portuguese."""
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
 
+        now_local = datetime.now(self._local_timezone)
+        if self._active_hours:
+            if not self._is_within_active_hours(now_local.time()):
+                if not self._outside_hours_logged:
+                    next_start = self._get_next_active_start(now_local)
+                    next_start_str = next_start.strftime('%d/%m %H:%M') if next_start else "horário configurado"
+                    label = self._active_hours_label or "janela configurada"
+                    print(f"⏸️  Fora da janela ativa ({label}); aguardando até {next_start_str}")
+                    self._outside_hours_logged = True
+                self.last_check_time = now_local
+                return []
+            if self._outside_hours_logged:
+                label = f" ({self._active_hours_label})" if self._active_hours_label else ""
+                print(f"▶️  Janela ativa retomada{label}")
+            self._outside_hours_logged = False
+
         # Use lock to prevent concurrent Claude queries
         async with self._client_lock:
             # Get base analysis from parent class
@@ -622,12 +818,15 @@ For EACH message you find, analyze it and provide in this EXACT format:
 ---MESSAGE---
 Channel: [channel name]
 User: [username]
+Timestamp: [exact Slack message ts value]
 Text: [full message text]
 Importance: [CRITICAL/IMPORTANT/NORMAL/IGNORE]
 Reason: [why this matters or doesn't]
 ---END MESSAGE---
 
-Be thorough - I need ALL fields for each message."""
+IMPORTANT: Always include the Slack message timestamp EXACTLY as returned by the tool (the ts field). Do not guess or reformat it.
+Responda em Português do Brasil e mantenha os títulos exatamente como especificado.
+Seja minucioso - preciso de TODOS os campos para cada mensagem."""
             else:
                 query = f"""USE Slack tools to search for messages with keywords: {", ".join(self.keywords)}
 
@@ -638,10 +837,15 @@ For EACH message found, provide in this EXACT format:
 ---MESSAGE---
 Channel: [channel name]
 User: [username]
+Timestamp: [exact Slack message ts value]
 Text: [full message text]
 Importance: [CRITICAL/IMPORTANT/NORMAL/IGNORE]
 Reason: [why this matters]
----END MESSAGE---"""
+---END MESSAGE---
+
+IMPORTANT: Always include the Slack message timestamp EXACTLY as returned by the tool (the ts field). Do not guess or reformat it.
+Responda em Português do Brasil e mantenha os títulos exatamente como especificado.
+Seja minucioso - preciso de TODOS os campos para cada mensagem."""
 
             await self.client.query(query)
 
@@ -661,8 +865,41 @@ Reason: [why this matters]
 
             # Process each alert
             alerts_to_send = []
+            previous_check_time = self.last_check_time
+            now_utc = datetime.now(timezone.utc)
+
+            if previous_check_time.tzinfo is None:
+                window_start_utc = previous_check_time.replace(tzinfo=self._local_timezone).astimezone(timezone.utc)
+            else:
+                window_start_utc = previous_check_time.astimezone(timezone.utc)
+
+            initial_cutoff_utc = now_utc - timedelta(minutes=60)
 
             for alert in alerts:
+                alert_dt = self._timestamp_to_datetime(alert.timestamp)
+                alert_dt_utc = alert_dt.astimezone(timezone.utc) if alert_dt else None
+
+                if alert_dt_utc:
+                    if self._initial_cycle_completed:
+                        if alert_dt_utc <= window_start_utc:
+                            print(f"⏭️  Skipping stale alert from {alert_dt_utc.isoformat()} (before last check window)")
+                            continue
+                    else:
+                        if alert_dt_utc < initial_cutoff_utc:
+                            print(f"⏭️  Skipping startup alert from {alert_dt_utc.isoformat()} (>60m old)")
+                            continue
+                else:
+                    print("⏭️  Skipping alert without valid timestamp information")
+                    continue
+
+                if self._message_already_processed(alert.message_id):
+                    print(f"⏭️  Already processed Slack ts {alert.slack_ts or alert.timestamp}")
+                    continue
+
+                self.seen_messages.add(alert.message_id)
+                if len(self.seen_messages) > 2000:
+                    self.seen_messages.pop()
+
                 # Compute signatures
                 alert.content_hash = self._compute_content_hash(alert.text)
                 alert.pattern_signature = self._extract_pattern_signature(alert.text, alert.channel)
@@ -672,6 +909,7 @@ Reason: [why this matters]
 
                 # Decide if we should send this alert
                 should_send, reason = await self._should_send_alert(alert, pattern_info)
+                alert.escalation_reason = reason
 
                 # Save to database
                 self._save_alert(alert, sent=should_send)
@@ -685,11 +923,16 @@ Reason: [why this matters]
                     print(f"   📝 Message: \"{msg_preview}\"")
 
                 if should_send:
+                    try:
+                        await self._enrich_alert(alert, pattern_info)
+                    except Exception as enrich_error:
+                        print(f"⚠️  Erro ao enriquecer alerta: {enrich_error}")
                     alerts_to_send.append(alert)
                     self._mark_pattern_sent(alert.pattern_signature)
 
             # Update last check time
             self.last_check_time = datetime.now()
+            self._initial_cycle_completed = True
 
             # Check if we should send full analysis instead
             send_full_analysis = getattr(self, 'send_full_analysis', False)
@@ -708,6 +951,371 @@ Reason: [why this matters]
             # in monitor_continuously()
 
             return []  # Return empty for compatibility
+
+    def _normalize_alert_timestamp(self, raw_timestamp: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Normalize timestamps coming back from Claude into ISO strings and Slack ts values."""
+        if not raw_timestamp:
+            return None, None
+
+        value = str(raw_timestamp).strip().strip('"').strip()
+        if not value or value.lower() in {"n/a", "none", "unknown"}:
+            return None, None
+
+        # First try Slack ts floating-point format (e.g. 1728300952.000200)
+        try:
+            slack_ts_float = float(value)
+            if slack_ts_float > 1_000_000_000:  # Rough sanity check (seconds since epoch)
+                dt = datetime.fromtimestamp(slack_ts_float, tz=timezone.utc)
+                slack_ts = f"{slack_ts_float:.6f}".rstrip("0").rstrip(".")
+                return dt.isoformat(), slack_ts
+        except ValueError:
+            pass
+
+        sanitized = value.replace("Z", "+00:00")
+        if sanitized.upper().endswith(" UTC"):
+            sanitized = sanitized[:-4].strip() + "+00:00"
+
+        timestamp_dt: Optional[datetime] = None
+
+        try:
+            timestamp_dt = datetime.fromisoformat(sanitized)
+        except ValueError:
+            pass
+
+        if timestamp_dt is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+                try:
+                    timestamp_dt = datetime.strptime(value, fmt)
+                    break
+                except ValueError:
+                    continue
+
+        if timestamp_dt is None:
+            return None, None
+
+        if timestamp_dt.tzinfo is None:
+            timestamp_dt = timestamp_dt.replace(tzinfo=self._local_timezone)
+
+        return timestamp_dt.astimezone(timezone.utc).isoformat(), None
+
+    @staticmethod
+    def _timestamp_to_datetime(timestamp_str: Optional[str]) -> Optional[datetime]:
+        """Convert stored ISO timestamp into aware datetime."""
+        if not timestamp_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(timestamp_str)
+        except ValueError:
+            return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt
+
+    def _message_already_processed(self, message_id: str) -> bool:
+        """Check if we've already processed this Slack message."""
+        if not message_id:
+            return False
+
+        if message_id in self.seen_messages:
+            return True
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM alerts WHERE message_id = ? LIMIT 1",
+            (message_id,)
+        )
+        exists = cursor.fetchone() is not None
+        conn.close()
+
+        if exists:
+            self.seen_messages.add(message_id)
+            if len(self.seen_messages) > 2000:
+                self.seen_messages.pop()
+
+        return exists
+
+    @staticmethod
+    def _parse_db_timestamp(value: Optional[str]) -> Optional[datetime]:
+        """Convert timestamps stored in SQLite (UTC) into aware datetimes."""
+        if not value:
+            return None
+
+        candidate = value.strip()
+        if not candidate:
+            return None
+
+        # Try ISO format first
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            dt = None
+
+        if dt is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    dt = datetime.strptime(candidate, fmt)
+                    break
+                except ValueError:
+                    continue
+
+        if dt is None:
+            return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt
+
+    def _format_local_time(self, dt: Optional[datetime], include_date: bool = True) -> Optional[str]:
+        """Format datetime in local timezone."""
+        if not dt:
+            return None
+
+        fmt = "%d/%m %H:%M" if include_date else "%H:%M"
+        return dt.astimezone(self._local_timezone).strftime(fmt)
+
+    @staticmethod
+    def _humanize_timedelta(delta: timedelta) -> str:
+        """Turn timedelta into a compact human readable string."""
+        total_seconds = int(abs(delta.total_seconds()))
+        days, remainder = divmod(total_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = remainder // 60
+
+        parts: List[str] = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes or not parts:
+            parts.append(f"{minutes}m")
+
+        return " ".join(parts)
+
+    def _collect_alert_history(
+        self,
+        pattern_signature: str,
+        limit: int = 5,
+        window_hours: int = 48,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent alert history for the given pattern."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT text, importance, reason, created_at, sent_to_slack
+            FROM alerts
+            WHERE pattern_signature = ?
+              AND created_at > datetime('now', '-' || ? || ' hours')
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (pattern_signature, window_hours, limit),
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        now_utc = datetime.now(timezone.utc)
+        entries: List[Dict[str, Any]] = []
+
+        for row in rows:
+            created_raw = row["created_at"]
+            created_dt = self._parse_db_timestamp(created_raw)
+            local_full = self._format_local_time(created_dt)
+            local_short = self._format_local_time(created_dt, include_date=False)
+            age = self._humanize_timedelta(now_utc - created_dt) if created_dt else "?"
+
+            entries.append(
+                {
+                    "text": row["text"],
+                    "importance": row["importance"],
+                    "reason": row["reason"],
+                    "created_at": created_raw,
+                    "created_dt": created_dt,
+                    "local_time": local_full,
+                    "local_time_short": local_short,
+                    "age": age,
+                    "sent_to_slack": bool(row["sent_to_slack"]),
+                }
+            )
+
+        return entries
+
+    @staticmethod
+    def _normalize_label_key(label: str) -> str:
+        """Normalize keys returned by Claude to compare irrespective of accents."""
+        decomposed = unicodedata.normalize("NFKD", label)
+        no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
+        return no_accents.upper().strip()
+
+    def _parse_insight_response(self, response: str) -> Dict[str, str]:
+        """
+        Parse structured response from Claude produced by _generate_alert_insights.
+        Returns lowercase keys: impact, cause, action, confidence
+        """
+        if not response.strip():
+            return {}
+
+        mapping = {
+            "IMPACTO": "impact",
+            "IMPACT": "impact",
+            "CAUSA": "cause",
+            "CAUSE": "cause",
+            "ACAO": "action",
+            "ACCION": "action",
+            "ACCIÓN": "action",
+            "ACTION": "action",
+            "CONFIANCA": "confidence",
+            "CONFIDENCE": "confidence",
+        }
+
+        insights: Dict[str, str] = {}
+        current_key: Optional[str] = None
+
+        for raw_line in response.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if ":" in line:
+                label, value = line.split(":", 1)
+                normalized = self._normalize_label_key(label)
+                mapped_key = mapping.get(normalized)
+
+                if mapped_key:
+                    insights[mapped_key] = value.strip()
+                    current_key = mapped_key
+                else:
+                    current_key = None
+            elif current_key:
+                # Continuation of previous value
+                insights[current_key] = f"{insights[current_key]} {line}".strip()
+
+        return insights
+
+    async def _generate_alert_insights(
+        self,
+        alert: Alert,
+        pattern_info: Dict[str, Any],
+        history_entries: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """Ask Claude for a concise operational insight about the alert."""
+        if not self.client:
+            return {}
+
+        first_seen_dt = alert.first_seen_dt
+        last_seen_dt = alert.last_seen_dt or self._timestamp_to_datetime(alert.timestamp)
+        now_dt = datetime.now(timezone.utc)
+        now_local = self._format_local_time(now_dt) or now_dt.astimezone(self._local_timezone).strftime("%d/%m %H:%M")
+
+        history_lines: List[str] = []
+        for entry in history_entries[:5]:
+            snippet = (entry["text"] or "").strip().replace("\n", " ")
+            if len(snippet) > 160:
+                snippet = snippet[:160] + "..."
+            decision = "enviado" if entry["sent_to_slack"] else "filtrado"
+            line = (
+                f"- {entry['local_time'] or entry['created_at']} "
+                f"({entry['age']} atrás, {decision}) — {entry['importance']} — {snippet}"
+            )
+            history_lines.append(line)
+
+        if not history_lines:
+            history_lines.append("- (Sem histórico adicional além deste evento.)")
+
+        first_seen_text = "indefinido"
+        if first_seen_dt:
+            first_seen_text = (
+                f"{self._format_local_time(first_seen_dt)} "
+                f"({self._humanize_timedelta(now_dt - first_seen_dt)} atrás)"
+            )
+
+        last_seen_text = "indefinido"
+        if last_seen_dt:
+            last_seen_text = (
+                f"{self._format_local_time(last_seen_dt)} "
+                f"({self._humanize_timedelta(now_dt - last_seen_dt)} atrás)"
+            )
+
+        prompt = f"""
+Você é um analista SRE acompanhando alertas recorrentes vindos do Slack.
+
+Alerta atual:
+- Canal: #{alert.channel}
+- Importância classificada: {alert.importance}
+- Texto: {alert.text.strip()}
+- Razão original: {alert.reason or 'não informado'}
+- Timestamp: {alert.timestamp}
+- Decisão de envio: {alert.escalation_reason or 'não informado'}
+
+Estatísticas do padrão:
+- Ocorrências rastreadas: {alert.occurrence_count}
+- Detectado inicialmente em: {first_seen_text}
+- Último evento registrado: {last_seen_text}
+- Horário atual: {now_local}
+
+Histórico recente (mais novos primeiro):
+{chr(10).join(history_lines)}
+
+Instruções:
+1. Resuma o impacto observado ou provável em 1 frase curta.
+2. Cite a causa provável ou informe que é desconhecida.
+3. Recomende a próxima ação objetiva (reiniciar serviço, acionar time, monitorar, etc).
+4. Informe o nível de confiança (BAIXA, MÉDIA ou ALTA) com justificativa breve.
+
+Responda STRICTAMENTE em quatro linhas neste formato:
+IMPACTO: ...
+CAUSA: ...
+AÇÃO: ...
+CONFIANÇA: ...
+"""
+
+        await self.client.query(prompt)
+        response, _ = await self._collect_response_text(timeout=self.response_timeout)
+        insights = self._parse_insight_response(response)
+
+        return insights
+
+    async def _enrich_alert(self, alert: Alert, pattern_info: Dict[str, Any]):
+        """Populate alert with historical context and LLM insight."""
+        alert.first_seen = pattern_info.get("first_seen")
+        alert.last_seen = pattern_info.get("last_seen")
+        alert.occurrence_count = pattern_info.get("occurrence_count", 1)
+        alert.first_seen_dt = self._parse_db_timestamp(alert.first_seen)
+        alert.last_seen_dt = self._parse_db_timestamp(alert.last_seen) or self._timestamp_to_datetime(alert.timestamp)
+
+        history_entries = self._collect_alert_history(
+            alert.pattern_signature,
+            limit=5,
+            window_hours=max(self.duplicate_window_hours, 48),
+        )
+        alert.history_entries = history_entries
+
+        if history_entries:
+            formatted_history = []
+            for entry in history_entries[:5]:
+                snippet = (entry["text"] or "").strip().replace("\n", " ")
+                if len(snippet) > 160:
+                    snippet = snippet[:160] + "..."
+                formatted_history.append(
+                    f"{entry['local_time'] or entry['created_at']} ({entry['age']} atrás) — {entry['importance']} — {snippet}"
+                )
+            alert.history_context = "\n".join(formatted_history)
+        else:
+            alert.history_context = "Sem histórico adicional."
+
+        try:
+            insights = await self._generate_alert_insights(alert, pattern_info, history_entries)
+            alert.insights = insights or None
+        except Exception as error:
+            print(f"⚠️  Falha ao gerar análise inteligente para {alert.pattern_signature}: {error}")
+            alert.insights = None
 
     def _parse_analysis(self, raw_text: str) -> List[Alert]:
         """Parse Claude's analysis into Alert objects"""
@@ -732,16 +1340,32 @@ Reason: [why this matters]
 
             # Create alert if we have minimum required fields
             if "channel" in alert_data and "text" in alert_data:
+                normalized_timestamp, slack_ts = self._normalize_alert_timestamp(
+                    alert_data.get("timestamp") or alert_data.get("ts")
+                )
+
+                if not normalized_timestamp:
+                    print(f"⏭️  Skipping message without usable timestamp: {alert_data.get('text', '')[:60]}")
+                    continue
+
+                dedupe_key = slack_ts if slack_ts else normalized_timestamp
+                channel_name = alert_data.get("channel", "unknown")
+
+                message_id = hashlib.md5(
+                    f"{channel_name.lower()}::{dedupe_key}".encode()
+                ).hexdigest()
+
                 alert = Alert(
-                    message_id=hashlib.md5(f"{alert_data.get('channel', '')}{alert_data.get('text', '')}{datetime.now().isoformat()}".encode()).hexdigest()[:16],
-                    channel=alert_data.get("channel", "unknown"),
+                    message_id=message_id,
+                    channel=channel_name,
                     user=alert_data.get("user", "unknown"),
                     text=alert_data.get("text", ""),
-                    timestamp=datetime.now().isoformat(),
+                    timestamp=normalized_timestamp,
                     importance=alert_data.get("importance", "NORMAL").upper(),
                     reason=alert_data.get("reason", ""),
                     content_hash="",
-                    pattern_signature=""
+                    pattern_signature="",
+                    slack_ts=slack_ts
                 )
                 alerts.append(alert)
 
@@ -782,32 +1406,98 @@ _Full report mode - showing Claude's complete analysis_"""
         critical = [a for a in alerts if a.importance == "CRITICAL"]
         important = [a for a in alerts if a.importance == "IMPORTANT"]
 
-        summary_parts = [f"🔔 *Alertas - {timestamp}*\n"]
+        def _format_alert_entry(idx: int, alert: Alert) -> List[str]:
+            msg_text = (alert.text or "").strip() or "[sem texto]"
+            msg_text = " ".join(msg_text.split())
+            if len(msg_text) > 90:
+                msg_text = msg_text[:90] + "..."
+
+            header = f"{idx}. #{alert.channel} - {msg_text}"
+
+            details: List[str] = []
+
+            first_seen_fmt = self._format_local_time(alert.first_seen_dt) if alert.first_seen_dt else None
+            occurrence_info = f"{alert.occurrence_count}"
+            if alert.occurrence_count > 1 and first_seen_fmt:
+                occurrence_info = f"{alert.occurrence_count} desde {first_seen_fmt}"
+            elif first_seen_fmt:
+                occurrence_info = f"1 às {first_seen_fmt}"
+
+            last_entry = alert.history_entries[0] if alert.history_entries else None
+            last_info = None
+            if last_entry:
+                last_time = last_entry.get("local_time_short") or last_entry.get("local_time")
+                last_age = last_entry.get("age")
+                if last_time and last_age:
+                    last_info = f"{last_time} ({last_age} atrás)"
+
+            meta_parts = [f"Ocorrências: {occurrence_info}"]
+            if last_info:
+                meta_parts.append(f"Último: {last_info}")
+            if alert.escalation_reason and (alert.reason or "").strip() != alert.escalation_reason.strip():
+                meta_parts.append(f"Critério: {alert.escalation_reason}")
+
+            details.append(" | ".join(meta_parts))
+
+            if alert.insights:
+                impact = alert.insights.get("impact")
+                cause = alert.insights.get("cause")
+                action = alert.insights.get("action")
+                confidence = alert.insights.get("confidence")
+
+                if impact or cause:
+                    impact_text = impact or "sem impacto declarado"
+                    cause_text = cause or "causa não identificada"
+                    details.append(f"Impacto: {impact_text} | Causa: {cause_text}")
+                if action:
+                    action_line = f"Ação: {action}"
+                    if confidence:
+                        action_line += f" (Confiança: {confidence})"
+                    details.append(action_line)
+                elif confidence:
+                    details.append(f"Confiança: {confidence}")
+            else:
+                if alert.reason:
+                    details.append(f"Motivo Claude: {alert.reason}")
+                if alert.escalation_reason and alert.escalation_reason != alert.reason:
+                    details.append(f"Critério de envio: {alert.escalation_reason}")
+
+            if alert.occurrence_count > 1 and len(alert.history_entries) > 1:
+                samples: List[str] = []
+                for entry in alert.history_entries[1:3]:
+                    sample_time = entry.get("local_time_short") or entry.get("local_time")
+                    age = entry.get("age")
+                    if sample_time and age:
+                        samples.append(f"{sample_time} ({age})")
+                if samples:
+                    details.append(f"Recorrências recentes: {', '.join(samples)}")
+
+            lines = [header]
+            if details:
+                lines.extend(f"   • {detail}" for detail in details)
+
+            return lines
+
+        summary_lines: List[str] = [f"🔔 *Alertas - {timestamp}*"]
 
         if critical:
-            summary_parts.append(f"🚨 *{len(critical)} CRÍTICO:*")
-            for i, alert in enumerate(critical, 1):
-                # Very compact format - one line per alert
-                msg_text = alert.text.strip() if alert.text else "[No text]"
-                if len(msg_text) > 80:
-                    msg_text = msg_text[:80] + "..."
-
-                # Single line format
-                summary_parts.append(f"{i}. #{alert.channel} - {msg_text}")
+            summary_lines.append("")
+            label = "CRÍTICO" if len(critical) == 1 else "CRÍTICOS"
+            summary_lines.append(f"🚨 *{len(critical)} {label}:*")
+            for idx, alert in enumerate(critical, 1):
+                summary_lines.extend(_format_alert_entry(idx, alert))
 
         if important:
-            summary_parts.append(f"\n⚠️ *{len(important)} IMPORTANTE:*")
-            for i, alert in enumerate(important, 1):
-                msg_text = alert.text.strip() if alert.text else "[No text]"
-                if len(msg_text) > 80:
-                    msg_text = msg_text[:80] + "..."
+            summary_lines.append("")
+            label = "IMPORTANTE" if len(important) == 1 else "IMPORTANTES"
+            summary_lines.append(f"⚠️ *{len(important)} {label}:*")
+            for idx, alert in enumerate(important, 1):
+                summary_lines.extend(_format_alert_entry(idx, alert))
 
-                # Single line format
-                summary_parts.append(f"{i}. #{alert.channel} - {msg_text}")
+        summary_lines.append("")
+        summary_lines.append("_Monitor inteligente - somente alertas urgentes/recorrentes_")
 
-        summary_parts.append("\n_Monitor inteligente - somente alertas urgentes/recorrentes_")
-
-        summary = "\n".join(summary_parts)
+        summary = "\n".join(summary_lines)
 
         # Debug: Show what we're sending
         print(f"\n📤 Sending summary to #{self.summary_channel}:")
@@ -909,7 +1599,9 @@ _Full report mode - showing Claude's complete analysis_"""
         # Escape for safer transmission
         safe_message = message.replace('"', "'").replace('`', "'")
 
-        channel_ref = self._summary_channel_id if self._summary_channel_id else self.summary_channel
+        channel_ref = self._get_summary_channel_reference()
+        if not channel_ref:
+            return False
 
         query = f"""Use the mcp__slack__conversations_add_message tool with these parameters:
 
@@ -992,58 +1684,119 @@ _Monitor is now active and filtering alerts intelligently..._"""
             print(f"❌ Could not send startup notification: {e}")
 
     def _get_recent_alerts_summary(self, hours: int) -> str:
-        """Get summary of recent alerts from database"""
+        """Build a richer snapshot for the startup notification."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # Get alerts from last N hours
-            cursor.execute("""
-                SELECT channel, text, importance, created_at
+            cursor.execute(
+                """
+                SELECT channel, text, importance, created_at, reason, pattern_signature
                 FROM alerts
                 WHERE created_at > datetime('now', '-' || ? || ' hours')
                 ORDER BY created_at DESC
-            """, (hours,))
+                """,
+                (hours,),
+            )
 
             alerts = cursor.fetchall()
-            conn.close()
 
             if not alerts:
+                conn.close()
                 return f"📭 *Resumo das últimas {hours}h:* Nenhum alerta registrado"
 
-            # Count by importance
             critical = sum(1 for a in alerts if a[2] == "CRITICAL")
             important = sum(1 for a in alerts if a[2] == "IMPORTANT")
 
-            summary_parts = [f"📊 *Resumo das últimas {hours}h:*"]
-
+            summary_lines: List[str] = [f"📊 *Resumo das últimas {hours}h:*"]
             if critical > 0:
-                summary_parts.append(f"   🚨 {critical} CRÍTICO(S)")
+                summary_lines.append(f"   🚨 {critical} CRÍTICO(S)")
             if important > 0:
-                summary_parts.append(f"   ⚠️ {important} IMPORTANTE(S)")
+                summary_lines.append(f"   ⚠️ {important} IMPORTANTE(S)")
 
-            # Show last 3 most important alerts
-            important_alerts = [a for a in alerts if a[2] in ["CRITICAL", "IMPORTANT"]][:3]
+            important_alerts = [a for a in alerts if a[2] in {"CRITICAL", "IMPORTANT"}][:3]
+
+            pattern_signatures = [row[5] for row in important_alerts if row[5]]
+            pattern_metadata: Dict[str, Dict[str, Any]] = {}
+
+            if pattern_signatures:
+                placeholders = ",".join("?" for _ in pattern_signatures)
+                cursor.execute(
+                    f"""
+                    SELECT pattern_signature, first_seen, last_seen, occurrence_count, last_sent
+                    FROM patterns
+                    WHERE pattern_signature IN ({placeholders})
+                    """,
+                    pattern_signatures,
+                )
+
+                for pattern_signature, first_seen, last_seen, occurrence_count, last_sent in cursor.fetchall():
+                    pattern_metadata[pattern_signature] = {
+                        "first_seen": self._parse_db_timestamp(first_seen),
+                        "last_seen": self._parse_db_timestamp(last_seen),
+                        "occurrence_count": occurrence_count,
+                        "last_sent": self._parse_db_timestamp(last_sent),
+                    }
+
+            conn.close()
 
             if important_alerts:
-                summary_parts.append(f"\n*Últimos alertas importantes:*")
-                for channel, text, importance, created_at in important_alerts:
-                    # Format time
-                    try:
-                        dt = datetime.fromisoformat(created_at)
-                        time_str = dt.strftime('%H:%M')
-                    except:
-                        time_str = created_at
+                summary_lines.append("")
+                summary_lines.append("*Últimos alertas importantes:*")
 
-                    # Truncate message
-                    msg_preview = text[:60] + "..." if len(text) > 60 else text
+                for channel, text, importance, created_at, reason, pattern_signature in important_alerts:
+                    created_dt = self._parse_db_timestamp(created_at)
+                    time_str = self._format_local_time(created_dt) or created_at
                     icon = "🚨" if importance == "CRITICAL" else "⚠️"
-                    summary_parts.append(f"{icon} {time_str} - #{channel}: {msg_preview}")
+                    clean_text = " ".join((text or "").split())
+                    if len(clean_text) > 80:
+                        clean_text = clean_text[:80] + "..."
+                    summary_lines.append(f"{icon} {time_str} - #{channel}: {clean_text}")
 
-            return "\n".join(summary_parts)
+                    detail_lines: List[str] = []
+                    pattern_info = pattern_metadata.get(pattern_signature)
 
-        except Exception as e:
-            return f"⚠️ Não foi possível carregar resumo: {e}"
+                    if pattern_info:
+                        occ = pattern_info.get("occurrence_count") or 1
+                        first_seen_dt = pattern_info.get("first_seen")
+                        occ_text = f"{occ}"
+                        if first_seen_dt:
+                            first_seen_local = self._format_local_time(first_seen_dt)
+                            if first_seen_local:
+                                occ_text += f" desde {first_seen_local}"
+                        detail_lines.append(f"Ocorrências rastreadas: {occ_text}")
+
+                        last_seen_dt = pattern_info.get("last_seen")
+                        if last_seen_dt and created_dt and created_dt >= last_seen_dt:
+                            age = self._humanize_timedelta(created_dt - last_seen_dt)
+                            if age and age != "0m":
+                                detail_lines.append(f"Última variação registrada há {age}")
+
+                    if reason:
+                        detail_lines.append(f"Motivo Claude: {reason}")
+
+                    if pattern_signature:
+                        history_entries = self._collect_alert_history(
+                            pattern_signature,
+                            limit=3,
+                            window_hours=max(self.duplicate_window_hours, 24),
+                        )
+                        if history_entries:
+                            samples: List[str] = []
+                            for entry in history_entries[:2]:
+                                time_label = entry.get("local_time_short") or entry.get("local_time")
+                                age = entry.get("age")
+                                if time_label and age:
+                                    samples.append(f"{time_label} ({age})")
+                            if samples:
+                                detail_lines.append(f"Ocorrências recentes: {', '.join(samples)}")
+
+                    summary_lines.extend(f"   • {line}" for line in detail_lines)
+
+            return "\n".join(summary_lines)
+
+        except Exception as error:
+            return f"⚠️ Não foi possível carregar resumo: {error}"
 
     async def _interaction_loop(self):
         """Separate loop for checking interactions at faster interval"""
@@ -1075,6 +1828,10 @@ _Monitor is now active and filtering alerts intelligently..._"""
             print(f"   Monitoring: All channels with keywords")
         if self.summary_channel:
             print(f"   📤 Sending filtered alerts to: #{self.summary_channel}")
+        if self._active_hours_label:
+            print(f"   Active hours: {self._active_hours_label} (horário local)")
+        else:
+            print(f"   Active hours: 24h (monitoramento contínuo)")
         print()
 
         await self.connect()

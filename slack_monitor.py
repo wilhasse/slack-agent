@@ -241,6 +241,7 @@ Be concise and focus on actionable insights."""
         minutes_ago = int((datetime.now() - self.last_check_time).total_seconds() / 60)
 
         # Build query based on channels to monitor
+        # NOTE: Keywords are no longer used - focus on channel-specific patterns and recurrence
         if self.channels_to_monitor:
             channel_list = ", ".join(self.channels_to_monitor)
             query = f"""USE the Slack MCP tools to check messages from the following channels: {channel_list}
@@ -249,28 +250,33 @@ IMPORTANT: You must use the mcp__slack__conversations_history tool to fetch actu
 
 Look for messages from the last {minutes_ago} minutes.
 
-For each important message you find, analyze and provide:
+For each message you find, analyze based on channel context and provide:
 1. Channel name
 2. User who sent it
 3. Message text
 4. Importance level (CRITICAL, IMPORTANT, NORMAL, IGNORE)
 5. Brief reason why it's important or can be ignored
 
+IMPORTANT: Classification should be based on message content, context, and channel-specific rules.
+Do NOT rely solely on keywords - understand the actual meaning and urgency.
+
 If no important messages are found, say so clearly."""
         else:
-            query = f"""USE the Slack MCP tools to search for messages.
+            # Fallback: Monitor all channels (no keyword filtering)
+            query = f"""USE the Slack MCP tools to check for recent messages across all channels.
 
-IMPORTANT: You must use the mcp__slack__conversations_search_messages tool to search for messages.
+IMPORTANT: You must use the mcp__slack__conversations_history tool to fetch messages.
 
-Search for messages from the last {minutes_ago} minutes containing these keywords:
-{", ".join(self.keywords)}
+Look for messages from the last {minutes_ago} minutes.
 
-For each important message you find, provide:
+For each message, analyze based on content and context:
 1. Channel name
 2. User who sent it
 3. Message text
 4. Importance level (CRITICAL, IMPORTANT, NORMAL, IGNORE)
 5. Brief reason
+
+Focus on actual urgency and meaning, not just keywords.
 
 If no messages are found, say so clearly."""
 

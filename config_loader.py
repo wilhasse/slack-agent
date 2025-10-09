@@ -95,6 +95,133 @@ class Config:
         """Get custom importance rules"""
         return self.config.get('importance_rules', '')
 
+    @property
+    def channel_rules(self) -> Dict[str, Any]:
+        """Get channel-specific alert rules"""
+        return self.config.get('channel_rules', {})
+
+    def get_channel_rule(self, channel_name: str) -> Dict[str, Any]:
+        """
+        Get rules for a specific channel.
+        Returns the channel's rules or default rules if not found.
+
+        Args:
+            channel_name: Name of the channel (e.g., "cslog-alertas-bd")
+
+        Returns:
+            Dict with channel rules including:
+            - description: Channel description
+            - recurrence_threshold: How many times alert must occur
+            - importance_hint: Suggested importance level
+            - patterns_to_watch: List of patterns (optional)
+            - pattern_rules: List of pattern-specific rules (optional)
+            - ignore_patterns: Patterns to ignore (optional)
+        """
+        rules = self.channel_rules
+
+        # Try exact match first
+        if channel_name in rules:
+            return rules[channel_name]
+
+        # Try partial match (for wildcard channel monitoring)
+        for rule_channel, rule_config in rules.items():
+            if rule_channel != 'default' and channel_name.startswith(rule_channel):
+                return rule_config
+
+        # Return default if no match
+        return rules.get('default', {
+            'description': 'Default channel',
+            'recurrence_threshold': 5,
+            'importance_hint': 'IMPORTANT'
+        })
+
+    def get_recurrence_threshold(self, channel_name: str, pattern_match: str = None) -> int:
+        """
+        Get the recurrence threshold for a specific channel and optionally pattern.
+
+        Args:
+            channel_name: Name of the channel
+            pattern_match: Optional pattern name that was matched
+
+        Returns:
+            Number of occurrences before alerting
+        """
+        channel_rule = self.get_channel_rule(channel_name)
+
+        # If pattern_match provided, check pattern_rules
+        if pattern_match and 'pattern_rules' in channel_rule:
+            for pattern_rule in channel_rule['pattern_rules']:
+                patterns = pattern_rule.get('patterns', [])
+                if any(p.lower() in pattern_match.lower() for p in patterns):
+                    return pattern_rule.get('recurrence_threshold', channel_rule.get('recurrence_threshold', 3))
+
+        # Return channel default
+        return channel_rule.get('recurrence_threshold', 3)
+
+    def should_ignore_pattern(self, channel_name: str, text: str) -> tuple[bool, str]:
+        """
+        Check if a message should be ignored based on channel ignore patterns.
+
+        Args:
+            channel_name: Name of the channel
+            text: Message text to check
+
+        Returns:
+            Tuple of (should_ignore: bool, reason: str)
+        """
+        channel_rule = self.get_channel_rule(channel_name)
+        ignore_patterns = channel_rule.get('ignore_patterns', [])
+
+        if not ignore_patterns:
+            return False, ""
+
+        text_lower = text.lower()
+        for pattern in ignore_patterns:
+            if pattern.lower() in text_lower:
+                reason = channel_rule.get('ignore_reason', f"Matches ignore pattern: {pattern}")
+                return True, reason
+
+        return False, ""
+
+    def get_pattern_match(self, channel_name: str, text: str) -> Dict[str, Any]:
+        """
+        Check if message matches any specific patterns for the channel.
+
+        Args:
+            channel_name: Name of the channel
+            text: Message text to analyze
+
+        Returns:
+            Dict with pattern match info:
+            - matched: bool
+            - pattern_name: str (if matched)
+            - importance: str (if matched)
+            - min_importance: str (if requires minimum importance)
+            - recurrence_threshold: int
+        """
+        channel_rule = self.get_channel_rule(channel_name)
+        pattern_rules = channel_rule.get('pattern_rules', [])
+
+        if not pattern_rules:
+            return {'matched': False}
+
+        text_lower = text.lower()
+
+        for pattern_rule in pattern_rules:
+            patterns = pattern_rule.get('patterns', [])
+            for pattern in patterns:
+                if pattern.lower() in text_lower:
+                    return {
+                        'matched': True,
+                        'pattern_name': pattern_rule.get('name', pattern),
+                        'importance': pattern_rule.get('importance', channel_rule.get('importance_hint', 'IMPORTANT')),
+                        'min_importance': pattern_rule.get('min_importance'),
+                        'recurrence_threshold': pattern_rule.get('recurrence_threshold', channel_rule.get('recurrence_threshold', 3)),
+                        'description': pattern_rule.get('description', '')
+                    }
+
+        return {'matched': False}
+
     def get_channel_pattern(self) -> str:
         """Get channel pattern for queries"""
         if not self.channels:
@@ -136,9 +263,45 @@ if __name__ == "__main__":
         print("✅ Configuration loaded successfully!\n")
         print(config)
         print(f"\nChannel pattern: {config.get_channel_pattern()}")
-        print(f"\nKeywords: {', '.join(config.keywords[:10])}...")
+
+        # Test channel rules
+        if config.channel_rules:
+            print(f"\n📋 Channel Rules:")
+            for channel, rules in config.channel_rules.items():
+                print(f"  • {channel}: {rules.get('description', 'No description')}")
+                print(f"    Threshold: {rules.get('recurrence_threshold', 'N/A')}")
+                if 'pattern_rules' in rules:
+                    print(f"    Pattern rules: {len(rules['pattern_rules'])}")
+
+        # Test specific channel lookups
+        print(f"\n🔍 Testing channel rule lookups:")
+        test_channels = ["cslog-alertas-bd", "cslog-alertas-mc", "cslog-alertas-grave", "other-channel"]
+        for ch in test_channels:
+            rule = config.get_channel_rule(ch)
+            threshold = config.get_recurrence_threshold(ch)
+            print(f"  {ch}: threshold={threshold}, hint={rule.get('importance_hint', 'N/A')}")
+
+        # Test pattern matching
+        print(f"\n🎯 Testing pattern matching:")
+        test_cases = [
+            ("cslog-alertas-mc", "LOAD average is high"),
+            ("cslog-alertas-mc", "database lock detected"),
+            ("cslog-alertas-mc", "memory usage critical"),
+            ("cslog-alertas-grave", "dxserver serviço updating"),
+        ]
+        for channel, text in test_cases:
+            pattern_match = config.get_pattern_match(channel, text)
+            should_ignore, ignore_reason = config.should_ignore_pattern(channel, text)
+            print(f"  {channel}: '{text[:40]}...'")
+            if should_ignore:
+                print(f"    → IGNORE: {ignore_reason}")
+            elif pattern_match['matched']:
+                print(f"    → Pattern: {pattern_match['pattern_name']}, threshold={pattern_match['recurrence_threshold']}")
+            else:
+                print(f"    → No special pattern")
+
         if config.importance_rules:
-            print(f"\nCustom rules defined: {len(config.importance_rules)} characters")
+            print(f"\n📜 Custom rules defined: {len(config.importance_rules)} characters")
     except FileNotFoundError as e:
         print(f"❌ {e}")
     except Exception as e:
