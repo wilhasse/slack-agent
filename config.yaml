@@ -1,9 +1,12 @@
 # Unified Slack Monitor Configuration
 # Works with both standard and smart monitors
 
-# Channels to monitor (supports wildcards)
+# Channels to monitor - using specific IDs for private channels
 channels:
-  - "cslog-alertas*"  # All channels starting with cslog-alertas
+  - "C09AR0R9DG9"  # cslog-alertas-mc (monitoring center)
+  - "C0891R0CET1"  # cslog-alertas-bd (database alerts)
+  - "C09360B9FRT"  # cslog-alertas-grave (serious/grave alerts)
+  - "C05Q5HNPLAY"  # cslog-alertas-sc (service alerts)
 
 # Channel to send summary/filtered alerts to
 summary_channel: "cslog-alertas-resumo"
@@ -14,11 +17,26 @@ summary_channel_id: "C09KQ5L2SF2"
 
 # Channel-specific alert rules
 # Each channel has its own importance criteria and recurrence thresholds
+# Rules can be matched by channel name OR channel ID
 channel_rules:
   # Database alerts - important when they repeat
   cslog-alertas-bd:
     description: "Database alerts"
     recurrence_threshold: 2  # Alert after 2 occurrences
+    importance_hint: "IMPORTANT"
+    patterns_to_watch:
+      - "database"
+      - "bd"
+      - "mysql"
+      - "postgres"
+      - "query"
+      - "connection"
+      - "timeout"
+
+  # Database alerts by channel ID (same rules as above)
+  C0891R0CET1:
+    description: "Database alerts"
+    recurrence_threshold: 2
     importance_hint: "IMPORTANT"
     patterns_to_watch:
       - "database"
@@ -54,6 +72,26 @@ channel_rules:
         recurrence_threshold: 2
         description: "Memory alerts are only sent if classified as CRITICAL"
 
+  # Monitoring center by channel ID (same rules as above)
+  C09AR0R9DG9:
+    description: "Monitoring center (verbose channel)"
+    recurrence_threshold: 5
+    importance_hint: "NORMAL"
+    pattern_rules:
+      - name: "Load average alerts"
+        patterns: ["LOAD", "load average", "high load", "cpu load"]
+        importance: "IMPORTANT"
+        recurrence_threshold: 3
+      - name: "Database locks"
+        patterns: ["database lock", "lock wait", "deadlock", "waiting for lock"]
+        importance: "IMPORTANT"
+        recurrence_threshold: 4
+      - name: "Memory alerts"
+        patterns: ["memory", "memória", "OOM", "out of memory", "swap"]
+        min_importance: "CRITICAL"
+        recurrence_threshold: 2
+        description: "Memory alerts are only sent if classified as CRITICAL"
+
   # Serious alerts - very important when recurring
   cslog-alertas-grave:
     description: "Serious/grave alerts"
@@ -65,6 +103,23 @@ channel_rules:
       - "dxserver servico"
       - "updating"
     ignore_reason: "dxserver service updates cause temporary expected downtime"
+
+  # Serious alerts by channel ID (same rules as above)
+  C09360B9FRT:
+    description: "Serious/grave alerts"
+    recurrence_threshold: 3
+    importance_hint: "CRITICAL"
+    ignore_patterns:
+      - "dxserver serviço"
+      - "dxserver servico"
+      - "updating"
+    ignore_reason: "dxserver service updates cause temporary expected downtime"
+
+  # Service alerts by channel ID (uses default rules)
+  C05Q5HNPLAY:
+    description: "Service alerts"
+    recurrence_threshold: 5
+    importance_hint: "IMPORTANT"
 
   # Default rule for all other alert channels
   default:
