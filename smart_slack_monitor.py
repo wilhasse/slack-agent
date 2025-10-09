@@ -122,6 +122,7 @@ class SmartSlackMonitor(SlackMonitor):
             "lookback_minutes": 60,
             "max_alerts": 10,
             "include_filtered": False,
+            "send_initial": False,
         }
 
         if not schedule:
@@ -132,6 +133,7 @@ class SmartSlackMonitor(SlackMonitor):
         lookback_minutes = schedule.get("lookback_minutes", default_schedule["lookback_minutes"])
         max_alerts = schedule.get("max_alerts", default_schedule["max_alerts"])
         include_filtered = bool(schedule.get("include_filtered", default_schedule["include_filtered"]))
+        send_initial = bool(schedule.get("send_initial", default_schedule["send_initial"]))
 
         try:
             interval_minutes = max(5, int(interval_minutes))
@@ -156,6 +158,7 @@ class SmartSlackMonitor(SlackMonitor):
             "lookback_delta": timedelta(minutes=lookback_minutes),
             "max_alerts": max_alerts,
             "include_filtered": include_filtered,
+            "send_initial": send_initial,
             "whatsapp": self._normalize_whatsapp_config(schedule.get("whatsapp")),
         }
 
@@ -1713,15 +1716,22 @@ _Full report mode - showing Claude's complete analysis_"""
             print("⚠️  Digest mode habilitado, mas summary_channel não está configurado.")
             return
 
-        interval = self._summary_schedule["interval_seconds"]
-        # Initial wait to avoid immediate double post on startup
-        await asyncio.sleep(interval)
+        schedule = self._summary_schedule
+        interval = schedule["interval_seconds"]
+        first_cycle = True
 
         while True:
+            delay = 0 if first_cycle and schedule.get("send_initial") else interval
+            first_cycle = False
+
+            if delay > 0:
+                await asyncio.sleep(delay)
+
             try:
                 now_local = datetime.now(self._local_timezone)
                 if not self._active_hours or self._is_within_active_hours(now_local.time()):
                     await self._send_digest_summary(now_local)
+                    schedule["send_initial"] = False
                 else:
                     next_start = self._get_next_active_start(now_local)
                     if next_start:
@@ -1733,8 +1743,6 @@ _Full report mode - showing Claude's complete analysis_"""
                 raise
             except Exception as error:
                 print(f"⚠️  Erro no resumo periódico: {error}")
-
-            await asyncio.sleep(interval)
 
     async def _send_digest_summary(self, reference_time: Optional[datetime] = None):
         """Send a digest of alerts observed within the configured lookback window."""

@@ -120,11 +120,16 @@ smart_filtering:
 
 # Periodic summary mode (automatic digest in summary channel)
 smart_summary:
-  enabled: false           # Set true to receive automatic digests
-  interval_minutes: 60     # Frequency between digests
-  lookback_minutes: 60     # Minutes of history covered per digest
-  max_alerts: 8            # Max alerts highlighted per digest
-  include_filtered: true   # Include filtered (not posted) alerts in digest
+  enabled: true
+  interval_minutes: 30
+  lookback_minutes: 30
+  max_alerts: 8
+  include_filtered: true
+  send_initial: true
+  whatsapp:
+    enabled: true
+    service_file: "whatsapp.txt"
+    auth_token_env: "TWILIO_AUTH_TOKEN"
 
 # Advanced features
 advanced:
