@@ -129,7 +129,7 @@ smart_summary:
   max_alerts: 8
   include_filtered: true
   send_initial: true
-  digest_only_mode: false  # Set true to disable continuous checking and only send digests
+  digest_only_mode: true  # Set true to disable continuous checking and only send digests
   whatsapp:
     enabled: true
     service_file: "whatsapp.txt"

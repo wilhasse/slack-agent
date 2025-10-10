@@ -1273,30 +1273,16 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
         if not alias and isinstance(identifier, str):
             alias = self._channel_aliases.get(identifier.lstrip('#'))
         if alias:
-            if identifier.startswith('C'):
-                return f"{alias} ({identifier})"
-            return alias
+            return f"{alias} ({identifier})" if identifier.startswith('C') else alias
         return identifier
 
     def _format_channel_for_summary(self, channel: str) -> str:
         if not channel:
             return channel
-
         alias = self._channel_aliases.get(channel)
-        lookup_channel = channel
-
         if not alias and isinstance(channel, str):
-            stripped = channel.lstrip('#')
-            alias = self._channel_aliases.get(stripped)
-            lookup_channel = stripped
-
-        if not alias and self.config and isinstance(channel, str):
-            channel_id = self.config.get_channel_id_from_alias(channel)
-            if channel_id:
-                alias = self._channel_aliases.get(channel_id)
-                lookup_channel = channel_id
-
-        label = alias or str(lookup_channel).lstrip('#')
+            alias = self._channel_aliases.get(channel.lstrip('#'))
+        label = alias or channel
         if not label.startswith('#'):
             label = f"#{label}"
         return label
