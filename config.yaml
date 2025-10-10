@@ -1,26 +1,25 @@
 # Unified Slack Monitor Configuration
 # Works with both standard and smart monitors
 
-# Channels to monitor - using specific IDs for private channels
+# Channels to monitor (Slack channel IDs only)
 channels:
-  - "C09AR0R9DG9"  # cslog-alertas-mc (monitoring center)
-  - "C0891R0CET1"  # cslog-alertas-bd (database alerts)
-  - "C09360B9FRT"  # cslog-alertas-grave (serious/grave alerts)
-  - "C05Q5HNPLAY"  # cslog-alertas-sc (service alerts)
+  - "C09AR0R9DG9"  # cslog-alertas-mc
+  - "C0891R0CET1"  # cslog-alertas-bd
+  - "C09360B9FRT"  # cslog-alertas-grave
+  - "C05Q5HNPLAY"  # cslog-alertas-sc
 
-# Channel to send summary/filtered alerts to
-summary_channel: "cslog-alertas-resumo"
+# Friendly labels for channel IDs (used for logs and prompts)
+channel_aliases:
+  C09AR0R9DG9: "cslog-alertas-mc"
+  C0891R0CET1: "cslog-alertas-bd"
+  C09360B9FRT: "cslog-alertas-grave"
+  C05Q5HNPLAY: "cslog-alertas-sc"
 
-# Channel ID (for faster lookups - no need to resolve name)
-# Get from Slack URL or monitor output
-summary_channel_id: "C09KQ5L2SF2"
 
 # Channel-specific alert rules
-# Each channel has its own importance criteria and recurrence thresholds
-# Rules can be matched by channel name OR channel ID
 channel_rules:
-  # Database alerts - important when they repeat
-  cslog-alertas-bd:
+  C0891R0CET1:
+    alias: "cslog-alertas-bd"
     description: "Database alerts"
     recurrence_threshold: 2  # Alert after 2 occurrences
     importance_hint: "IMPORTANT"
@@ -33,49 +32,10 @@ channel_rules:
       - "connection"
       - "timeout"
 
-  # Database alerts by channel ID (same rules as above)
-  C0891R0CET1:
-    description: "Database alerts"
-    recurrence_threshold: 2
-    importance_hint: "IMPORTANT"
-    patterns_to_watch:
-      - "database"
-      - "bd"
-      - "mysql"
-      - "postgres"
-      - "query"
-      - "connection"
-      - "timeout"
-
-  # Monitoring center - very verbose, pattern-specific rules
-  cslog-alertas-mc:
+  C09AR0R9DG9:
+    alias: "cslog-alertas-mc"
     description: "Monitoring center (verbose channel)"
     recurrence_threshold: 5  # Higher baseline due to verbosity
-    importance_hint: "NORMAL"
-    pattern_rules:
-      # LOAD alerts - important after 3 occurrences
-      - name: "Load average alerts"
-        patterns: ["LOAD", "load average", "high load", "cpu load"]
-        importance: "IMPORTANT"
-        recurrence_threshold: 3
-
-      # Database locks - important but still verbose
-      - name: "Database locks"
-        patterns: ["database lock", "lock wait", "deadlock", "waiting for lock"]
-        importance: "IMPORTANT"
-        recurrence_threshold: 4
-
-      # Memory - only if CRITICAL
-      - name: "Memory alerts"
-        patterns: ["memory", "memória", "OOM", "out of memory", "swap"]
-        min_importance: "CRITICAL"  # Only alert if Claude classifies as CRITICAL
-        recurrence_threshold: 2
-        description: "Memory alerts are only sent if classified as CRITICAL"
-
-  # Monitoring center by channel ID (same rules as above)
-  C09AR0R9DG9:
-    description: "Monitoring center (verbose channel)"
-    recurrence_threshold: 5
     importance_hint: "NORMAL"
     pattern_rules:
       - name: "Load average alerts"
@@ -92,36 +52,23 @@ channel_rules:
         recurrence_threshold: 2
         description: "Memory alerts are only sent if classified as CRITICAL"
 
-  # Serious alerts - very important when recurring
-  cslog-alertas-grave:
+  C09360B9FRT:
+    alias: "cslog-alertas-grave"
     description: "Serious/grave alerts"
     recurrence_threshold: 3  # Alert after 3 occurrences
     importance_hint: "CRITICAL"
     ignore_patterns:
-      # Service updates that cause temporary downtime
       - "dxserver serviço"
       - "dxserver servico"
       - "updating"
     ignore_reason: "dxserver service updates cause temporary expected downtime"
 
-  # Serious alerts by channel ID (same rules as above)
-  C09360B9FRT:
-    description: "Serious/grave alerts"
-    recurrence_threshold: 3
-    importance_hint: "CRITICAL"
-    ignore_patterns:
-      - "dxserver serviço"
-      - "dxserver servico"
-      - "updating"
-    ignore_reason: "dxserver service updates cause temporary expected downtime"
-
-  # Service alerts by channel ID (uses default rules)
   C05Q5HNPLAY:
+    alias: "cslog-alertas-sc"
     description: "Service alerts"
     recurrence_threshold: 5
     importance_hint: "IMPORTANT"
 
-  # Default rule for all other alert channels
   default:
     description: "All other alert channels"
     recurrence_threshold: 5  # Must repeat significantly to be important

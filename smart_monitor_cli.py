@@ -176,6 +176,7 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
     # Load Config object for channel-specific rules
     from config_loader import Config
     config_obj = Config(config_file)
+    channel_aliases = config_obj.channel_aliases
 
     # Create monitor
     monitor = SmartSlackMonitor(
@@ -221,7 +222,8 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
     print(f"\n⚙️  Configuration:")
 
     if channels:
-        print(f"   Channels:               {', '.join(channels)}")
+        channel_labels = [config_obj.resolve_channel_label(ch) for ch in channels]
+        print(f"   Channels:               {', '.join(channel_labels)}")
     else:
         print(f"   Channels:               All (keyword search)")
 

@@ -6,7 +6,7 @@ Configuration loader for YAML config files
 import yaml
 import os
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 
 class Config:
@@ -16,6 +16,10 @@ class Config:
         """Load configuration from YAML file"""
         self.config_file = config_file
         self.config = self._load_config()
+
+        self._channel_aliases = {}
+        self._alias_to_id = {}
+        self._initialize_channel_aliases()
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration"""
@@ -32,22 +36,58 @@ class Config:
 
         return config or {}
 
+    def _initialize_channel_aliases(self):
+        raw_aliases = self.config.get('channel_aliases', {}) or {}
+        for key, value in raw_aliases.items():
+            if value:
+                key_str = str(key)
+                value_str = str(value)
+                self._channel_aliases[key_str] = value_str
+                self._alias_to_id.setdefault(value_str, key_str)
+
+        channel_rules = self.config.get('channel_rules', {}) or {}
+        for channel_id, rule in channel_rules.items():
+            if isinstance(rule, dict):
+                alias = rule.get('alias')
+                if alias:
+                    cid = str(channel_id)
+                    alias_str = str(alias)
+                    self._channel_aliases.setdefault(cid, alias_str)
+                    self._alias_to_id.setdefault(alias_str, cid)
+
+    @property
+    def channel_aliases(self) -> Dict[str, str]:
+        return dict(self._channel_aliases)
+
+    def get_channel_alias(self, channel_id: str) -> Optional[str]:
+        return self._channel_aliases.get(channel_id)
+
+    def resolve_channel_label(self, channel_id: str) -> str:
+        alias = self._channel_aliases.get(channel_id)
+        return f"{alias} ({channel_id})" if alias else channel_id
+
+    def get_channel_id_from_alias(self, alias: str) -> Optional[str]:
+        if not alias:
+            return None
+        alias = alias.lstrip('#')
+        return self._alias_to_id.get(alias)
+
     @property
     def channels(self) -> List[str]:
         """Get list of channels to monitor"""
-        channels = self.config.get('channels', [])
+        raw_channels = self.config.get('channels', []) or []
+        unique_channels: List[str] = []
+        seen = set()
 
-        # Expand wildcard patterns
-        expanded = []
-        for channel in channels:
-            if '*' in channel:
-                # For now, just remove the asterisk - the actual expansion
-                # will happen when querying Slack
-                expanded.append(channel.replace('*', ''))
-            else:
-                expanded.append(channel)
+        for channel in raw_channels:
+            channel_str = str(channel)
+            if '*' in channel_str:
+                channel_str = channel_str.replace('*', '')
+            if channel_str not in seen:
+                seen.add(channel_str)
+                unique_channels.append(channel_str)
 
-        return channels  # Return original with wildcards
+        return unique_channels
 
     @property
     def keywords(self) -> List[str]:
@@ -119,13 +159,23 @@ class Config:
         """
         rules = self.channel_rules
 
-        # Try exact match first
+        # Direct match
         if channel_name in rules:
             return rules[channel_name]
 
-        # Try partial match (for wildcard channel monitoring)
+        # Strip leading # if present
+        normalized = channel_name.lstrip('#') if isinstance(channel_name, str) else channel_name
+
+        # Alias lookup
+        channel_id = self.get_channel_id_from_alias(normalized)
+        if channel_id and channel_id in rules:
+            return rules[channel_id]
+
+        # Try partial match for historical configs
         for rule_channel, rule_config in rules.items():
-            if rule_channel != 'default' and channel_name.startswith(rule_channel):
+            if rule_channel == 'default':
+                continue
+            if isinstance(rule_channel, str) and normalized.startswith(rule_channel):
                 return rule_config
 
         # Return default if no match

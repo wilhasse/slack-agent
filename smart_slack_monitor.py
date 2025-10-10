@@ -89,6 +89,7 @@ class SmartSlackMonitor(SlackMonitor):
         self._summary_channel_id = None  # Cache channel ID for faster lookups
         self._responded_messages = set()  # Track which messages we've already responded to
         self.config = config  # Store config for channel-specific rules
+        self._channel_aliases = config.channel_aliases if config else {}
         tzinfo = datetime.now().astimezone().tzinfo
         self._local_timezone = tzinfo if tzinfo else timezone.utc
         self._initial_cycle_completed = False
@@ -758,32 +759,16 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             # Calculate timestamp for filtering (only messages in last check window)
             oldest_timestamp = (datetime.now() - timedelta(seconds=seconds_ago)).timestamp()
 
-            query = f"""Use mcp__slack__conversations_history to get messages from channel "{channel_ref}".
-
-CRITICAL INSTRUCTIONS:
-1. Get messages with ts > {oldest_timestamp}
-2. Filter for human messages only (no bots)
-3. Respond ONLY in the exact format shown below - NO other text
-
-RESPONSE FORMAT (use EXACTLY this format):
-If human messages found:
----INTERACTION---
-User: <username>
-Text: <message text>
-Timestamp: <ts value>
----END INTERACTION---
-
-If NO human messages:
-No interactions found
-
-EXAMPLE of correct response:
----INTERACTION---
-User: wil
-Text: Pode me atualizar os últimos alertas?
-Timestamp: 1760031500.123456
----END INTERACTION---
-
-DO NOT add explanations. DO NOT describe what you're doing. ONLY output the format above."""
+            query = (
+                f"Use mcp__slack__conversations_history to fetch messages from \"{channel_ref}\" newer than ts {oldest_timestamp}. Return human messages only."
+                "\nIf none are found, reply exactly: No interactions found"
+                "\nOtherwise, output each message using this block:"
+                "\n---INTERACTION---"
+                "\nUser: <username>"
+                "\nText: <message text>"
+                "\nTimestamp: <ts value>"
+                "\n---END INTERACTION---"
+            )
 
             try:
                 print(f"🔄 Checking for interactions (last {seconds_ago}s)...")
@@ -1049,7 +1034,8 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
                 # Log decision with preview
                 status_icon = "✅" if should_send else "⏭️"
                 msg_preview = alert.text[:60] + "..." if len(alert.text) > 60 else alert.text
-                print(f"{status_icon} [{alert.importance}] #{alert.channel} - {reason}")
+                channel_label = self._format_channel_for_summary(alert.channel)
+                print(f"{status_icon} [{alert.importance}] {channel_label} - {reason}")
                 if should_send:
                     print(f"   📝 Message: \"{msg_preview}\"")
 
@@ -1279,6 +1265,43 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
         return entries
 
     @staticmethod
+
+    def _format_channel_label(self, identifier: str) -> str:
+        if not identifier:
+            return identifier
+        alias = self._channel_aliases.get(identifier)
+        if not alias and isinstance(identifier, str):
+            alias = self._channel_aliases.get(identifier.lstrip('#'))
+        if alias:
+            if identifier.startswith('C'):
+                return f"{alias} ({identifier})"
+            return alias
+        return identifier
+
+    def _format_channel_for_summary(self, channel: str) -> str:
+        if not channel:
+            return channel
+
+        alias = self._channel_aliases.get(channel)
+        lookup_channel = channel
+
+        if not alias and isinstance(channel, str):
+            stripped = channel.lstrip('#')
+            alias = self._channel_aliases.get(stripped)
+            lookup_channel = stripped
+
+        if not alias and self.config and isinstance(channel, str):
+            channel_id = self.config.get_channel_id_from_alias(channel)
+            if channel_id:
+                alias = self._channel_aliases.get(channel_id)
+                lookup_channel = channel_id
+
+        label = alias or str(lookup_channel).lstrip('#')
+        if not label.startswith('#'):
+            label = f"#{label}"
+        return label
+
+
     def _normalize_label_key(label: str) -> str:
         """Normalize keys returned by Claude to compare irrespective of accents."""
         decomposed = unicodedata.normalize("NFKD", label)
@@ -1544,7 +1567,8 @@ _Full report mode - showing Claude's complete analysis_"""
             if len(msg_text) > 90:
                 msg_text = msg_text[:90] + "..."
 
-            header = f"{idx}. #{alert.channel} - {msg_text}"
+            channel_label = self._format_channel_for_summary(alert.channel)
+            header = f"{idx}. {channel_label} - {msg_text}"
 
             details: List[str] = []
 
@@ -1921,7 +1945,8 @@ _Full report mode - showing Claude's complete analysis_"""
 
                 status = "enviado" if sent_to_slack else "filtrado"
                 status_icon = "✅" if sent_to_slack else "⏳"
-                message_lines.append(f"{status_icon} {time_str} · #{channel} · [{importance}] · {clean_text} ({status})")
+                channel_display = self._format_channel_for_summary(channel)
+                message_lines.append(f"{status_icon} {time_str} · {channel_display} · [{importance}] · {clean_text} ({status})")
                 if reason:
                     message_lines.append(f"   • Motivo Claude: {reason}")
                 listed += 1
@@ -2254,7 +2279,8 @@ _Monitor is now active and filtering alerts intelligently..._"""
             print(f"   Checking interactions every {self.interaction_check_interval} seconds")
         print(f"   Keywords: {', '.join(self.keywords)}")
         if self.channels_to_monitor:
-            print(f"   Channels: {', '.join(self.channels_to_monitor)}")
+            display_channels = ", ".join(self._format_channel_label(ch) for ch in self.channels_to_monitor)
+            print(f"   Channels: {display_channels}")
         else:
             print(f"   Monitoring: All channels with keywords")
         if self.summary_channel:
