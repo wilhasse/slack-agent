@@ -99,6 +99,8 @@ class SmartSlackMonitor(SlackMonitor):
         self._outside_hours_logged = False
         self._summary_schedule = self._prepare_summary_schedule(summary_schedule)
         self._summary_schedule_label = self._summary_schedule.get("label")
+        self._digest_only_mode = self._summary_schedule.get("digest_only_mode", False)
+        self._suppress_realtime_delivery = False
         self._summary_task: Optional[asyncio.Task] = None
         self._prompt_log_file = Path(prompt_log_file).expanduser() if prompt_log_file else None
         self._prompt_log_lock = asyncio.Lock()
@@ -733,6 +735,9 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
         if not getattr(self, 'interactive_mode', False):
             return
 
+        if getattr(self, "_digest_only_mode", False):
+            return
+
         if not self.summary_channel or not self.client:
             return
 
@@ -1006,6 +1011,9 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
 
             # Process each alert
             alerts_to_send = []
+            alerts_marked_for_digest = 0
+            send_realtime = not self._suppress_realtime_delivery
+            digest_notice_logged = False
             previous_check_time = self.last_check_time
             now_utc = datetime.now(timezone.utc)
 
@@ -1065,11 +1073,19 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
                     print(f"   📝 Message: \"{msg_preview}\"")
 
                 if should_send:
-                    try:
-                        await self._enrich_alert(alert, pattern_info)
-                    except Exception as enrich_error:
-                        print(f"⚠️  Erro ao enriquecer alerta: {enrich_error}")
-                    alerts_to_send.append(alert)
+                    alerts_marked_for_digest += 1
+
+                    if send_realtime:
+                        try:
+                            await self._enrich_alert(alert, pattern_info)
+                        except Exception as enrich_error:
+                            print(f"⚠️  Erro ao enriquecer alerta: {enrich_error}")
+                        alerts_to_send.append(alert)
+                    else:
+                        if not digest_notice_logged:
+                            print("   📝 Modo digest-only ativo: armazenando alertas aprovados sem envio imediato.")
+                            digest_notice_logged = True
+
                     self._mark_pattern_sent(alert.pattern_signature)
 
             # Update last check time
@@ -1080,14 +1096,20 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
             send_full_analysis = getattr(self, 'send_full_analysis', False)
 
             if self.summary_channel:
-                if send_full_analysis:
-                    # Send Claude's complete raw analysis
-                    await self._send_full_analysis(raw_analysis, len(alerts))
-                elif alerts_to_send:
-                    # Send filtered summary
-                    await self._send_smart_summary(alerts_to_send)
+                if send_realtime:
+                    if send_full_analysis:
+                        # Send Claude's complete raw analysis
+                        await self._send_full_analysis(raw_analysis, len(alerts))
+                    elif alerts_to_send:
+                        # Send filtered summary
+                        await self._send_smart_summary(alerts_to_send)
+                    else:
+                        print(f"\n✅ No alerts met sending criteria - keeping channel clean")
                 else:
-                    print(f"\n✅ No alerts met sending criteria - keeping channel clean")
+                    if alerts_marked_for_digest:
+                        print(f"\n📝 Digest-only: {alerts_marked_for_digest} alerta(s) relevantes armazenados para o próximo resumo.")
+                    else:
+                        print(f"\n✅ Digest-only: nenhum alerta relevante registrado neste ciclo.")
 
             # Don't check interactions here - they're checked on a separate faster schedule
             # in monitor_continuously()
@@ -1846,6 +1868,23 @@ _Full report mode - showing Claude's complete analysis_"""
                 result["auth_token"] = token
 
         return result
+
+    async def _ingest_for_digest_mode(self):
+        """Collect alerts for digest-only mode without sending real-time notifications."""
+        if not self._digest_only_mode:
+            return
+
+        previous_flag = self._suppress_realtime_delivery
+        self._suppress_realtime_delivery = True
+        try:
+            await self.check_messages()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(f"⚠️  Falha ao coletar alertas para o resumo: {error}")
+        finally:
+            self._suppress_realtime_delivery = previous_flag
+
     async def _summary_loop(self):
         """Background loop that posts periodic digests."""
         if not self.summary_channel:
@@ -1866,6 +1905,8 @@ _Full report mode - showing Claude's complete analysis_"""
             try:
                 now_local = datetime.now(self._local_timezone)
                 if not self._active_hours or self._is_within_active_hours(now_local.time()):
+                    if self._digest_only_mode:
+                        await self._ingest_for_digest_mode()
                     await self._send_digest_summary(now_local)
                     schedule["send_initial"] = False
                 else:
@@ -2277,7 +2318,7 @@ _Monitor is now active and filtering alerts intelligently..._"""
 
     async def monitor_continuously(self):
         """Override to add startup notification and separate interaction checking"""
-        digest_only_mode = self._summary_schedule.get("digest_only_mode", False)
+        digest_only_mode = self._digest_only_mode
 
         print(f"🔍 Starting Smart Slack Monitor...")
         if digest_only_mode:
@@ -2285,7 +2326,10 @@ _Monitor is now active and filtering alerts intelligently..._"""
         else:
             print(f"   Checking alerts every {self.check_interval} seconds")
         if getattr(self, 'interactive_mode', False):
-            print(f"   Checking interactions every {self.interaction_check_interval} seconds")
+            if digest_only_mode:
+                print("   Checking interactions: disabled (digest-only mode)")
+            else:
+                print(f"   Checking interactions every {self.interaction_check_interval} seconds")
         print(f"   Keywords: {', '.join(self.keywords)}")
         if self.channels_to_monitor:
             display_channels = ", ".join(self._format_channel_label(ch) for ch in self.channels_to_monitor)
@@ -2311,7 +2355,7 @@ _Monitor is now active and filtering alerts intelligently..._"""
 
         # Start interaction loop as a separate task (if enabled)
         interaction_task = None
-        if getattr(self, 'interactive_mode', False):
+        if getattr(self, 'interactive_mode', False) and not digest_only_mode:
             interaction_task = asyncio.create_task(self._interaction_loop())
 
         summary_task = None
