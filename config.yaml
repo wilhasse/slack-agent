@@ -15,6 +15,10 @@ channel_aliases:
   C09360B9FRT: "cslog-alertas-grave"
   C05Q5HNPLAY: "cslog-alertas-sc"
 
+# Where to send alert summaries and digests
+# Use channel name (e.g., "cslog-resumo") or ID (e.g., "C1234567890")
+summary_channel: "cslog-alertas-grave"  # Change this to your preferred summary channel
+summary_channel_id: "C09360B9FRT"  # Optional: pre-resolved ID for faster lookups
 
 # Channel-specific alert rules
 channel_rules:

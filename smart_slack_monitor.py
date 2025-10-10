@@ -1264,8 +1264,6 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
 
         return entries
 
-    @staticmethod
-
     def _format_channel_label(self, identifier: str) -> str:
         if not identifier:
             return identifier
@@ -1288,7 +1286,7 @@ Seja minucioso - preciso de TODOS os campos para cada mensagem."""
         return label
 
 
-    def _normalize_label_key(label: str) -> str:
+    def _normalize_label_key(self, label: str) -> str:
         """Normalize keys returned by Claude to compare irrespective of accents."""
         decomposed = unicodedata.normalize("NFKD", label)
         no_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
