@@ -166,6 +166,7 @@ smart_filtering:
 
   # Ask Claude for final decision on borderline cases
   use_claude_decision: true
+  prompt_log_file: "logs/claude_prompts.log"
 
   # Optional active monitoring window (local time). When set, the monitor
   # only runs between these hours (inclusive of start, exclusive of end).
@@ -181,10 +182,12 @@ smart_summary:
   max_alerts: 8
   include_filtered: true
   send_initial: true
+  digest_only_mode: false  # Set true to disable continuous checking and only send digests
   whatsapp:
     enabled: true
     service_file: "whatsapp.txt"
     auth_token_env: "TWILIO_AUTH_TOKEN"
+    use_template: false  # Sandbox supports plain text messages
 
 # Advanced features
 advanced:

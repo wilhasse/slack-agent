@@ -164,6 +164,8 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
     summary_config = config.get("smart_summary", {})
     summary_schedule = summary_config if isinstance(summary_config, dict) else None
 
+    prompt_log_file = smart_filtering.get("prompt_log_file")
+
     # Advanced options
     advanced = config.get("advanced", {})
     db_path = advanced.get("smart_database", advanced.get("database", "smart_alerts.db"))
@@ -190,6 +192,7 @@ async def run_monitor(config: dict, config_file: str, run_once: bool = False):
         interaction_check_interval=interaction_check_interval,
         active_hours=active_hours,
         summary_schedule=summary_schedule,
+        prompt_log_file=prompt_log_file,
         config=config_obj,  # Pass config for channel-specific rules
     )
 

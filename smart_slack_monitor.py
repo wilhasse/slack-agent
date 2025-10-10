@@ -71,6 +71,7 @@ class SmartSlackMonitor(SlackMonitor):
         slack_webhook_url: str = None,  # Alternative to MCP for sending messages
         interaction_check_interval: int = 5,  # Check for interactions every 5 seconds
         active_hours: Optional[Dict[str, str]] = None,  # Optional active monitoring window
+        prompt_log_file: Optional[str] = None,  # Optional path to log prompts sent to Claude
         summary_schedule: Optional[Dict[str, Any]] = None,  # Periodic summary configuration
         config: Config = None,  # Configuration with channel rules
         **kwargs
@@ -97,6 +98,8 @@ class SmartSlackMonitor(SlackMonitor):
         self._summary_schedule = self._prepare_summary_schedule(summary_schedule)
         self._summary_schedule_label = self._summary_schedule.get("label")
         self._summary_task: Optional[asyncio.Task] = None
+        self._prompt_log_file = Path(prompt_log_file).expanduser() if prompt_log_file else None
+        self._prompt_log_lock = asyncio.Lock()
 
         self._init_database()
 
@@ -113,6 +116,21 @@ class SmartSlackMonitor(SlackMonitor):
         if self._summary_channel_id:
             return self._summary_channel_id
         return self._summary_channel_ref
+
+    async def _log_prompt(self, label: str, prompt_text: str):
+        """Append prompt text to configured log file with timestamp."""
+        if not self._prompt_log_file:
+            return
+
+        try:
+            async with self._prompt_log_lock:
+                self._prompt_log_file.parent.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                with self._prompt_log_file.open('a', encoding='utf-8') as log_file:
+                    log_file.write(f"[{timestamp}] {label}\n")
+                    log_file.write(prompt_text.strip() + "\n\n")
+        except Exception as error:
+            print(f"⚠️  Não foi possível registrar prompt ({label}): {error}")
 
     def _prepare_summary_schedule(self, schedule: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Normalize summary schedule configuration."""
@@ -150,6 +168,9 @@ class SmartSlackMonitor(SlackMonitor):
         except (TypeError, ValueError):
             max_alerts = default_schedule["max_alerts"]
 
+        # Get digest_only_mode setting
+        digest_only_mode = bool(schedule.get("digest_only_mode", False))
+
         schedule_normalized = {
             "enabled": enabled,
             "interval_minutes": interval_minutes,
@@ -159,6 +180,7 @@ class SmartSlackMonitor(SlackMonitor):
             "max_alerts": max_alerts,
             "include_filtered": include_filtered,
             "send_initial": send_initial,
+            "digest_only_mode": digest_only_mode,
             "whatsapp": self._normalize_whatsapp_config(schedule.get("whatsapp")),
         }
 
@@ -687,6 +709,7 @@ We want to avoid channel pollution. Only send alerts that:
 Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" and a brief reason."""
 
         try:
+            await self._log_prompt("claude_decision", query)
             await self.client.query(query)
             response, _ = await self._collect_response_text(timeout=self.response_timeout)
 
@@ -764,6 +787,7 @@ DO NOT add explanations. DO NOT describe what you're doing. ONLY output the form
 
             try:
                 print(f"🔄 Checking for interactions (last {seconds_ago}s)...")
+                await self._log_prompt("interaction_scan", query)
                 await self.client.query(query)
 
                 response_text, _ = await self._collect_response_text(timeout=self.response_timeout)
@@ -819,40 +843,41 @@ DO NOT add explanations. DO NOT describe what you're doing. ONLY output the form
 
         print(f"   Question from @{user}: {question[:60]}...")
 
-        # Get recent alert context from database
+        # Get recent alert context from database (COMPACT - only last 6 hours, top 5 alerts)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT channel, text, importance, reason, created_at
+            SELECT channel, text, importance, created_at
             FROM alerts
-            WHERE created_at > datetime('now', '-24 hours')
+            WHERE created_at > datetime('now', '-6 hours')
+              AND importance IN ('CRITICAL', 'IMPORTANT')
             ORDER BY created_at DESC
-            LIMIT 10
+            LIMIT 5
         """)
 
         recent_alerts = cursor.fetchall()
         conn.close()
 
-        # Build context for Claude
-        context_parts = ["Alertas recentes (últimas 24h):"]
-        for channel, text, importance, reason, created_at in recent_alerts:
-            preview = text[:100] if text else ""
-            context_parts.append(f"- [{importance}] #{channel}: {preview}")
+        # Build COMPACT context for Claude (no repetition, short previews)
+        context_parts = []
+        for channel, text, importance, created_at in recent_alerts:
+            # Very short preview (40 chars max)
+            preview = text[:40] if text else "sem texto"
+            context_parts.append(f"[{importance[0]}] #{channel}: {preview}")
 
-        context = "\n".join(context_parts)
+        context = "\n".join(context_parts) if context_parts else "Nenhum alerta recente"
 
-        # Ask Claude to respond with context
-        response_query = f"""Responda à pergunta abaixo sobre os alertas recentes em no máximo duas frases, em Português do Brasil:
+        # Ask Claude to respond with context (COMPACT prompt)
+        response_query = f"""Pergunta: "{question}"
 
-QUESTION: "{question}"
-
-ALERTS CONTEXT:
+Contexto (últimas 6h):
 {context}
 
-Seja direto, cite o status atual se conhecido e indique a próxima ação recomendada."""
+Responda em 1-2 frases curtas em PT-BR."""
 
         try:
+            await self._log_prompt("interaction_response", response_query)
             await self.client.query(response_query)
             response_text, _ = await self._collect_response_text(timeout=self.response_timeout)
 
@@ -952,6 +977,7 @@ IMPORTANT: Always include the Slack message timestamp EXACTLY as returned by the
 Responda em Português do Brasil e mantenha os títulos exatamente como especificado.
 Seja minucioso - preciso de TODOS os campos para cada mensagem."""
 
+            await self._log_prompt("check_messages", query)
             await self.client.query(query)
 
             raw_analysis, _ = await self._collect_response_text(timeout=self.response_timeout)
@@ -1381,6 +1407,7 @@ AÇÃO: ...
 CONFIANÇA: ...
 """
 
+        await self._log_prompt("insight_generation", prompt)
         await self.client.query(prompt)
         response, _ = await self._collect_response_text(timeout=self.response_timeout)
         insights = self._parse_insight_response(response)
@@ -1622,8 +1649,46 @@ _Full report mode - showing Claude's complete analysis_"""
         except Exception as e:
             print(f"❌ Failed to send summary: {e}")
 
+
+    def _split_message_smart(self, message: str, max_length: int = 1500) -> List[str]:
+        """Split message into chunks at natural breakpoints (newlines)."""
+        if len(message) <= max_length:
+            return [message]
+
+        chunks = []
+        lines = message.split('\n')
+        current_chunk = []
+        current_length = 0
+
+        for line in lines:
+            line_length = len(line) + 1  # +1 for newline
+
+            if current_length + line_length > max_length:
+                # Save current chunk
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+
+                # If single line is too long, split it
+                if line_length > max_length:
+                    for i in range(0, len(line), max_length - 3):
+                        chunks.append(line[i:i+max_length-3] + "...")
+                else:
+                    current_chunk = [line]
+                    current_length = line_length
+            else:
+                current_chunk.append(line)
+                current_length += line_length
+
+        # Add remaining chunk
+        if current_chunk:
+            chunks.append('\n'.join(current_chunk))
+
+        return chunks
+
     async def _send_whatsapp_digest(self, message: str):
-        """Send digest message via WhatsApp using Twilio API."""
+        """Send digest message via WhatsApp using Twilio API (split if needed)."""
         whatsapp_cfg = self._summary_schedule.get("whatsapp", {})
         if not whatsapp_cfg.get("enabled"):
             return
@@ -1658,30 +1723,56 @@ _Full report mode - showing Claude's complete analysis_"""
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
 
-        payload: Dict[str, Any]
-        if use_template and content_sid:
-            payload = {
-                "To": to_number,
-                "From": from_number,
-                "ContentSid": content_sid,
-                "ContentVariables": json.dumps({"1": message[:1600]}),
-            }
-        else:
-            payload = {
-                "To": to_number,
-                "From": from_number,
-                "Body": message[:1600],
-            }
+        # Split message into chunks if needed (max 1500 chars per message)
+        chunks = self._split_message_smart(message, max_length=1500)
 
         try:
             import httpx
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(url, data=payload, auth=(account_sid, auth_token))
-                if response.status_code in (200, 201):
-                    print("📨 Resumo enviado via WhatsApp")
+                sent_count = 0
+                for i, chunk in enumerate(chunks):
+                    # Add part indicator if multiple chunks
+                    if len(chunks) > 1:
+                        chunk_message = f"[{i+1}/{len(chunks)}]\n{chunk}"
+                    else:
+                        chunk_message = chunk
+
+                    payload: Dict[str, Any]
+                    if use_template and content_sid:
+                        payload = {
+                            "To": to_number,
+                            "From": from_number,
+                            "ContentSid": content_sid,
+                            "ContentVariables": json.dumps({"1": chunk_message}),
+                        }
+                    else:
+                        payload = {
+                            "To": to_number,
+                            "From": from_number,
+                            "Body": chunk_message,
+                        }
+
+                    response = await client.post(url, data=payload, auth=(account_sid, auth_token))
+
+                    if response.status_code in (200, 201):
+                        sent_count += 1
+                    else:
+                        print(f"⚠️  Falha ao enviar parte {i+1}/{len(chunks)}: {response.status_code} - {response.text[:200]}")
+                        break
+
+                    # Small delay between messages to avoid rate limiting
+                    if i < len(chunks) - 1:
+                        await asyncio.sleep(0.5)
+
+                if sent_count == len(chunks):
+                    if len(chunks) > 1:
+                        print(f"📨 Resumo enviado via WhatsApp ({len(chunks)} mensagens, {len(message)} chars total)")
+                    else:
+                        print(f"📨 Resumo enviado via WhatsApp ({len(message)} chars)")
                 else:
-                    print(f"⚠️  Falha ao enviar WhatsApp: {response.status_code} - {response.text[:200]}")
+                    print(f"⚠️  Enviadas apenas {sent_count}/{len(chunks)} mensagens")
+
         except Exception as error:
             print(f"⚠️  Erro ao enviar WhatsApp: {error}")
 
@@ -1950,6 +2041,7 @@ Message (send exactly as shown):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
         try:
+            await self._log_prompt("mcp_add_message", query)
             await self.client.query(query)
 
             response, _ = await self._collect_response_text(timeout=self.response_timeout)
@@ -2151,8 +2243,13 @@ _Monitor is now active and filtering alerts intelligently..._"""
 
     async def monitor_continuously(self):
         """Override to add startup notification and separate interaction checking"""
+        digest_only_mode = self._summary_schedule.get("digest_only_mode", False)
+
         print(f"🔍 Starting Smart Slack Monitor...")
-        print(f"   Checking alerts every {self.check_interval} seconds")
+        if digest_only_mode:
+            print(f"   Mode: DIGEST ONLY (continuous checking disabled)")
+        else:
+            print(f"   Checking alerts every {self.check_interval} seconds")
         if getattr(self, 'interactive_mode', False):
             print(f"   Checking interactions every {self.interaction_check_interval} seconds")
         print(f"   Keywords: {', '.join(self.keywords)}")
@@ -2190,15 +2287,29 @@ _Monitor is now active and filtering alerts intelligently..._"""
                 print("⚠️  Resumo periódico habilitado, mas summary_channel não está definido; recurso ignorado.")
 
         try:
-            while True:
-                try:
-                    await self.check_messages()
-                    await asyncio.sleep(self.check_interval)
-                except KeyboardInterrupt:
-                    break
-                except Exception as e:
-                    print(f"❌ Error checking messages: {e}")
-                    await asyncio.sleep(self.check_interval)
+            if digest_only_mode:
+                # Digest-only mode: Just wait for summary loop, no continuous checking
+                print("⏸️  Continuous alert checking disabled (digest_only_mode=true)")
+                print("   Monitor will only send periodic digests\n")
+
+                if not summary_task:
+                    print("⚠️  WARNING: digest_only_mode enabled but periodic summary is not enabled!")
+                    print("   Enable smart_summary.enabled in config.yaml to receive digests.\n")
+
+                # Keep process alive and wait for summary loop
+                while True:
+                    await asyncio.sleep(60)  # Check every minute to keep process responsive
+            else:
+                # Normal mode: Continuous alert checking
+                while True:
+                    try:
+                        await self.check_messages()
+                        await asyncio.sleep(self.check_interval)
+                    except KeyboardInterrupt:
+                        break
+                    except Exception as e:
+                        print(f"❌ Error checking messages: {e}")
+                        await asyncio.sleep(self.check_interval)
         finally:
             # Cancel interaction task if running
             if interaction_task:
