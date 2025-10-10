@@ -94,6 +94,7 @@ smart_filtering:
   # Enable interactive mode - Claude responds to questions in summary channel
   # Users can ask about recent alerts, request context, or give commands
   # Example: "What was that disk space alert about?" → Claude answers with context
+  # OPTIMIZED: Only queries LLM when new messages appear (no waste when idle)
   interactive_mode: true
 
   # How often to check for interactions in summary channel (seconds)

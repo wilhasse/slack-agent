@@ -88,6 +88,7 @@ class SmartSlackMonitor(SlackMonitor):
         self._client_lock = asyncio.Lock()  # Prevent concurrent Claude queries
         self._summary_channel_id = None  # Cache channel ID for faster lookups
         self._responded_messages = set()  # Track which messages we've already responded to
+        self._last_message_timestamp = 0.0  # Track timestamp of last message seen in summary channel
         self.config = config  # Store config for channel-specific rules
         self._channel_aliases = config.channel_aliases if config else {}
         tzinfo = datetime.now().astimezone().tzinfo
@@ -727,7 +728,7 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             return False
 
     async def _check_for_interactions(self):
-        """Check if anyone is asking questions in the summary channel"""
+        """Check if anyone is asking questions in the summary channel - optimized to only query when new messages exist"""
         # Check if interactive mode is enabled
         if not getattr(self, 'interactive_mode', False):
             return
@@ -740,53 +741,77 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
 
         # Try to acquire lock, but don't wait if alerts are being checked
         if self._client_lock.locked():
-            # Skip this check if alert monitoring is running
-            print(f"⏭️  Skipping interaction check (alert monitoring in progress)")
+            # Skip this check if alert monitoring is running (silent - no print spam)
             return
 
         # Use lock to prevent concurrent Claude queries
         async with self._client_lock:
-            # Use separate time tracking for interactions
-            seconds_ago = int((datetime.now() - self.last_interaction_check).total_seconds())
-            if seconds_ago <= 0:
-                seconds_ago = self.interaction_check_interval
-
             # Use cached channel ID if available (much faster!)
             channel_ref = self._get_summary_channel_reference()
             if not channel_ref:
                 return
 
-            # Calculate timestamp for filtering (only messages in last check window)
-            oldest_timestamp = (datetime.now() - timedelta(seconds=seconds_ago)).timestamp()
+            # OPTIMIZATION: Use last seen message timestamp to avoid unnecessary LLM calls
+            # Only query Claude if there might be messages newer than what we've seen
 
-            query = (
-                f"Use mcp__slack__conversations_history to fetch messages from \"{channel_ref}\" newer than ts {oldest_timestamp}. Return human messages only."
-                "\nIf none are found, reply exactly: No interactions found"
-                "\nOtherwise, output each message using this block:"
-                "\n---INTERACTION---"
-                "\nUser: <username>"
-                "\nText: <message text>"
-                "\nTimestamp: <ts value>"
-                "\n---END INTERACTION---"
+            # Initialize timestamp to current time if this is the first check (skip old history)
+            if self._last_message_timestamp == 0.0:
+                self._last_message_timestamp = datetime.now().timestamp()
+                print(f"   Initialized interaction tracking (will only check for new messages from now on)")
+                self.last_interaction_check = datetime.now()
+                return
+
+            oldest_timestamp = self._last_message_timestamp
+
+            # Quick lightweight check: are there any messages newer than our last seen timestamp?
+            quick_check_query = (
+                f"Use mcp__slack__conversations_history to fetch messages from \"{channel_ref}\" "
+                f"newer than ts {oldest_timestamp}. "
+                "Count only HUMAN messages (ignore bot messages). "
+                "Reply with ONLY a number: the count of human messages found."
             )
 
             try:
-                print(f"🔄 Checking for interactions (last {seconds_ago}s)...")
-                await self._log_prompt("interaction_scan", query)
-                await self.client.query(query)
+                # Step 1: Quick count check (lightweight - just get message count)
+                await self.client.query(quick_check_query)
+                count_response, _ = await self._collect_response_text(timeout=15)
 
+                # Extract number from response
+                import re
+                match = re.search(r'\d+', count_response)
+                message_count = int(match.group()) if match else 0
+
+                if message_count == 0:
+                    # No new messages - skip expensive processing (silent)
+                    self.last_interaction_check = datetime.now()
+                    return
+
+                # Step 2: There ARE new messages - fetch and process them
+                print(f"💬 Found {message_count} new message(s) in #{self.summary_channel}")
+
+                fetch_query = (
+                    f"Use mcp__slack__conversations_history to fetch messages from \"{channel_ref}\" "
+                    f"newer than ts {oldest_timestamp}. Return human messages only."
+                    "\nFor each message, output:"
+                    "\n---INTERACTION---"
+                    "\nUser: <username>"
+                    "\nText: <message text>"
+                    "\nTimestamp: <ts value>"
+                    "\n---END INTERACTION---"
+                )
+
+                await self.client.query(fetch_query)
                 response_text, _ = await self._collect_response_text(timeout=self.response_timeout)
-
-                # Debug: Show what Claude said
-                if response_text and "No interactions found" not in response_text:
-                    print(f"🔍 Interaction check response: {response_text[:200]}")
-                else:
-                    print(f"   No interactions found")
 
                 # Check if there are interactions
                 if "---INTERACTION---" in response_text:
-                    print(f"💬 Found user interaction in #{self.summary_channel}")
                     await self._handle_interaction(response_text)
+
+                    # Update last seen timestamp to newest message
+                    # Extract all timestamps and use the max
+                    timestamps = re.findall(r'Timestamp:\s*([\d.]+)', response_text)
+                    if timestamps:
+                        self._last_message_timestamp = max(float(ts) for ts in timestamps)
 
                 # Update last interaction check time
                 self.last_interaction_check = datetime.now()
