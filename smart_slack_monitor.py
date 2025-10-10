@@ -774,7 +774,7 @@ Should we send this to the monitoring channel? Answer ONLY with "YES" or "NO" an
             try:
                 # Step 1: Quick count check (lightweight - just get message count)
                 await self.client.query(quick_check_query)
-                count_response, _ = await self._collect_response_text(timeout=15)
+                count_response, _ = await self._collect_response_text(timeout=30)
 
                 # Extract number from response
                 import re
