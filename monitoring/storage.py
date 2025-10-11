@@ -273,7 +273,13 @@ class AlertStore:
         cursor.execute(f"PRAGMA table_info({table})")
         columns = {row[1] for row in cursor.fetchall()}
         if column not in columns:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError as error:
+                if "non-constant default" in str(error).lower():
+                    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                else:
+                    raise
             if update_sql:
                 try:
                     cursor.execute(update_sql)
