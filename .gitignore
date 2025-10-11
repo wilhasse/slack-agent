@@ -36,6 +36,9 @@ config.py
 logs/
 *.log.*
 
+# Local Twilio helper files
+whatsapp.txt
+
 # Database files (if using SQLite for advanced_example.py)
 *.db
 *.sqlite
