@@ -40,6 +40,15 @@ class RealtimeMonitor:
 
             cursor_key = f"cursor:{channel_rule.id}"
             oldest_ts = self.store.get_state(cursor_key)
+
+            # On first run (cursor is None), set cursor to "now" to avoid backfilling old messages
+            if oldest_ts is None:
+                import time
+                current_ts = str(time.time())
+                self.store.set_state(cursor_key, current_ts)
+                print(f"⏭️  First run for {channel_rule.label} - skipping historical messages, cursor set to now")
+                continue
+
             messages = await self.slack_client.fetch_recent_messages(
                 channel_rule.id,
                 oldest_ts=oldest_ts,

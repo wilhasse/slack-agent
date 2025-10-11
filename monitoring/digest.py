@@ -10,6 +10,7 @@ from .configuration import load_runtime_config
 from .llm import LLMClient, LLMInvocationError
 from .models import AlertRecord, DigestConfig, RuntimeConfig, SeverityLevel
 from .notifications import NotificationManager
+from .slack_client import SlackClientWrapper
 from .storage import AlertStore
 
 
@@ -19,7 +20,8 @@ class DigestGenerator:
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.store = AlertStore(config.database_path)
-        self.notifier = NotificationManager(config.slack, config.notifications)
+        self.slack_client = SlackClientWrapper(config.slack.bot_token)
+        self.notifier = NotificationManager(config.slack, config.notifications, slack_client=self.slack_client)
         self.llm_client: Optional[LLMClient] = None
 
         if config.digest.llm.enabled:
@@ -100,7 +102,36 @@ class DigestGenerator:
             await self.notifier.send_whatsapp_message(message)
 
 
-async def run_digest(config_path: str = "config.yaml") -> None:
+async def run_digest(config_path: str = "config.yaml", once: bool = False) -> None:
+    """Run digest generator once or in a loop."""
     config = load_runtime_config(config_path)
+    if not config.digest.enabled:
+        print("Digest generator disabled in configuration.")
+        return
+
     generator = DigestGenerator(config)
-    await generator.send_digest()
+
+    if once:
+        await generator.send_digest()
+        return
+
+    # Run periodically
+    interval_seconds = config.digest.interval_minutes * 60
+    print(f"📰 Digest generator running every {config.digest.interval_minutes} minutes")
+
+    # Send initial digest if configured
+    if config.digest.send_initial:
+        try:
+            await generator.send_digest()
+            print(f"✅ Initial digest sent at {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+        except Exception as error:
+            print(f"❌ Failed to send initial digest: {error}")
+
+    # Main loop
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await generator.send_digest()
+            print(f"✅ Digest sent at {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+        except Exception as error:
+            print(f"❌ Digest error: {error}")

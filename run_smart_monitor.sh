@@ -27,10 +27,14 @@ source venv/bin/activate
 
 # Check for .env.oauth
 if [ -f ".env.oauth" ]; then
+    set -a  # automatically export all variables
     source .env.oauth
+    set +a
     echo -e "${GREEN}✓${NC} Loaded OAuth token from .env.oauth"
 elif [ -f ".env" ]; then
+    set -a  # automatically export all variables
     source .env
+    set +a
     echo -e "${GREEN}✓${NC} Loaded environment from .env"
 else
     echo -e "${YELLOW}⚠️  No .env.oauth or .env file found${NC}"

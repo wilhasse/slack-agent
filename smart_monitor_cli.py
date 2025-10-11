@@ -39,7 +39,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         choices=["realtime", "digest", "both"],
-        default="realtime",
+        default="both",
         help="Which monitoring mode to execute",
     )
     parser.add_argument("--once", action="store_true", help="Run a single iteration and exit")
@@ -105,13 +105,22 @@ async def main() -> None:
 
     mode = args.mode
 
-    if mode in {"realtime", "both"}:
+    # Run both monitors concurrently when mode is "both"
+    if mode == "both" and not args.once:
+        print("🔄 Starting realtime monitor and digest generator...")
+        tasks = [
+            asyncio.create_task(run_realtime_monitor(config_path=args.config, once=False)),
+            asyncio.create_task(run_digest(config_path=args.config, once=False)),
+        ]
+        await asyncio.gather(*tasks)
+
+    elif mode == "realtime":
         print("🔄 Starting realtime monitor..." if not args.once else "🔍 Running realtime monitor once...")
         await run_realtime_monitor(config_path=args.config, once=args.once)
 
-    if mode in {"digest", "both"} and not args.once:
-        print("📰 Generating digest summary...")
-        await run_digest(config_path=args.config)
+    elif mode == "digest":
+        print("📰 Generating digest summary..." if args.once else "📰 Starting digest generator...")
+        await run_digest(config_path=args.config, once=args.once)
 
 
 if __name__ == "__main__":

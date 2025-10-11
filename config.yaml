@@ -28,17 +28,9 @@ channels:
       - replication
     ignore_patterns: []
 
-  - id: C09360B9FRT
-    label: cslog-alertas-grave
-    severity_hint: CRITICAL
-    recurrence_threshold: 3
-    critical_keywords:
-      - produção parada
-      - outage
-    ignore_patterns:
-      - dxserver serviço
-      - dxserver servico
-      - updating
+  # NOTE: cslog-alertas-grave (C09360B9FRT) is NOT monitored as an input channel
+  # It is ONLY used as the output channel for critical notifications (see slack.critical_channel below)
+  # This prevents a feedback loop where the monitor reads its own notifications
 
   - id: C05Q5HNPLAY
     label: cslog-alertas-sc
@@ -60,7 +52,7 @@ notifications:
 realtime_monitor:
   enabled: true
   check_interval_seconds: 30
-  severity_threshold: IMPORTANT
+  severity_threshold: CRITICAL  # Only send CRITICAL alerts to notification channels
   duplicate_window_minutes: 60
   lookback_minutes: 120
   llm:
