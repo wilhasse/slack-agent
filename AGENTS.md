@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Core Python entry points live in the repo root: `slack_chat.py` (interactive), `slack_monitor.py` / `slack_monitor_yaml.py` (scheduled), and `smart_slack_monitor.py` (Smart Monitor). Helper scripts (`setup.sh`, `run_with_oauth.sh`, `run_smart_monitor.sh`) stay nearby for quick launches. The Go transport sits in `slack-mcp-server/`; rebuild its binary whenever that folder changes. Defaults land in `config.yaml` and `smart_config_example.yaml`, extended references live in `docs/`, and diagnostics such as `test_slack_tools.py` and `diagnose.py` remain top-level for fast access.
+Core Python entry points live in the repo root: `slack_chat.py` (interactive Claude chat), `slack_monitor.py` / `slack_monitor_yaml.py` (legacy Claude monitors), and `smart_monitor_cli.py` (new realtime + digest pipeline). Helper scripts (`setup.sh`, `run_with_oauth.sh`, `run_smart_monitor.sh`) stay nearby for quick launches. The Go transport sits in `slack-mcp-server/`; rebuild its binary whenever that folder changes. Defaults land in `config.yaml`, extended references live in `docs/`, and diagnostics such as `test_slack_tools.py` and `diagnose.py` remain top-level for fast access.
 
 ## Build, Test, and Development Commands
 ```bash
@@ -9,7 +9,9 @@ Core Python entry points live in the repo root: `slack_chat.py` (interactive), `
 go build -buildvcs=false -o slack-mcp-server/slack-mcp-server ./slack-mcp-server/cmd/slack-mcp-server
 source venv/bin/activate       # enter the virtualenv
 ./run_with_oauth.sh            # launch interactive agent (OAuth-aware wrapper)
-./run_smart_monitor.sh --once  # smoke-test Smart Monitor logic
+./run_smart_monitor.sh --mode realtime   # start realtime detector
+./run_smart_monitor.sh --mode digest     # generate a digest immediately
+./run_smart_monitor.sh --stats           # quick DB statistics
 python diagnose.py             # verify Slack connectivity and tooling
 python test_slack_tools.py     # exercise MCP tools end-to-end (requires tokens)
 ```

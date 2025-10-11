@@ -1,6 +1,6 @@
-# Smart Slack Monitor
+# Smart Slack Monitor (v2)
 
-An **intelligent** Slack monitoring system that uses Claude AI to filter alerts and **only send what truly matters** to your monitoring channel, avoiding pollution and alert fatigue.
+> **Note:** The project has been refactored to use a hybrid architecture: deterministic heuristics + optional low-cost LLMs (for realtime alerts) and an optional digest generator. This document still references the Claude-only implementation; update sections gradually as the new pipeline stabilises.
 
 ## 🎯 The Problem
 
@@ -437,8 +437,8 @@ Patterns are based on keywords in message text. Check:
 
 Debug:
 ```python
-# In smart_slack_monitor.py, _extract_pattern_signature()
-# Add print statement to see extracted patterns
+# In monitoring/classifier.py, adjust ChannelRule.critical_keywords
+# or add logging inside HeuristicClassifier.classify()
 ```
 
 ## 📚 Architecture

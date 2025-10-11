@@ -1,202 +1,79 @@
-# Unified Slack Monitor Configuration
-# Works with both standard and smart monitors
+slack:
+  bot_token_env: SLACK_BOT_TOKEN
+  summary_channel: cslog-alertas-resumo
+  summary_channel_id: C09KQ5L2SF2
+  critical_channel: cslog-alertas-grave
+  use_socket_mode: false
 
-# Channels to monitor (Slack channel IDs only)
 channels:
-  - "C09AR0R9DG9"  # cslog-alertas-mc
-  - "C0891R0CET1"  # cslog-alertas-bd
-  - "C09360B9FRT"  # cslog-alertas-grave
-  - "C05Q5HNPLAY"  # cslog-alertas-sc
-
-# Friendly labels for channel IDs (used for logs and prompts)
-channel_aliases:
-  C09AR0R9DG9: "cslog-alertas-mc"
-  C0891R0CET1: "cslog-alertas-bd"
-  C09360B9FRT: "cslog-alertas-grave"
-  C05Q5HNPLAY: "cslog-alertas-sc"
-
-# Where to send alert summaries and digests
-# Use channel name (e.g., "cslog-resumo") or ID (e.g., "C1234567890")
-summary_channel: "cslog-alertas-grave"  # Change this to your preferred summary channel
-summary_channel_id: "C09360B9FRT"  # Optional: pre-resolved ID for faster lookups
-
-# Channel-specific alert rules
-channel_rules:
-  C0891R0CET1:
-    alias: "cslog-alertas-bd"
-    description: "Database alerts"
-    recurrence_threshold: 2  # Alert after 2 occurrences
-    importance_hint: "IMPORTANT"
-    patterns_to_watch:
-      - "database"
-      - "bd"
-      - "mysql"
-      - "postgres"
-      - "query"
-      - "connection"
-      - "timeout"
-
-  C09AR0R9DG9:
-    alias: "cslog-alertas-mc"
-    description: "Monitoring center (verbose channel)"
-    recurrence_threshold: 5  # Higher baseline due to verbosity
-    importance_hint: "NORMAL"
-    pattern_rules:
-      - name: "Load average alerts"
-        patterns: ["LOAD", "load average", "high load", "cpu load"]
-        importance: "IMPORTANT"
-        recurrence_threshold: 3
-      - name: "Database locks"
-        patterns: ["database lock", "lock wait", "deadlock", "waiting for lock"]
-        importance: "IMPORTANT"
-        recurrence_threshold: 4
-      - name: "Memory alerts"
-        patterns: ["memory", "memória", "OOM", "out of memory", "swap"]
-        min_importance: "CRITICAL"
-        recurrence_threshold: 2
-        description: "Memory alerts are only sent if classified as CRITICAL"
-
-  C09360B9FRT:
-    alias: "cslog-alertas-grave"
-    description: "Serious/grave alerts"
-    recurrence_threshold: 3  # Alert after 3 occurrences
-    importance_hint: "CRITICAL"
-    ignore_patterns:
-      - "dxserver serviço"
-      - "dxserver servico"
-      - "updating"
-    ignore_reason: "dxserver service updates cause temporary expected downtime"
-
-  C05Q5HNPLAY:
-    alias: "cslog-alertas-sc"
-    description: "Service alerts"
+  - id: C09AR0R9DG9
+    label: cslog-alertas-mc
+    severity_hint: NORMAL
     recurrence_threshold: 5
-    importance_hint: "IMPORTANT"
+    critical_keywords:
+      - urgent
+      - indisponível
+      - indisponivel
+      - timeout
+    ignore_patterns: []
 
-  default:
-    description: "All other alert channels"
-    recurrence_threshold: 5  # Must repeat significantly to be important
-    importance_hint: "IMPORTANT"
+  - id: C0891R0CET1
+    label: cslog-alertas-bd
+    severity_hint: IMPORTANT
+    recurrence_threshold: 2
+    critical_keywords:
+      - database
+      - banco de dados
+      - erro crítico
+      - replication
+    ignore_patterns: []
 
-# How often to check for new messages (seconds)
-check_interval: 60  # 1 minute
+  - id: C09360B9FRT
+    label: cslog-alertas-grave
+    severity_hint: CRITICAL
+    recurrence_threshold: 3
+    critical_keywords:
+      - produção parada
+      - outage
+    ignore_patterns:
+      - dxserver serviço
+      - dxserver servico
+      - updating
 
-# Smart Monitor Settings (only used by smart monitor)
-smart_filtering:
-  # Enable smart filtering (dedup, pattern detection, etc.)
-  enabled: true
+  - id: C05Q5HNPLAY
+    label: cslog-alertas-sc
+    severity_hint: IMPORTANT
+    recurrence_threshold: 4
+    critical_keywords:
+      - incidente
+      - falha
+    ignore_patterns: []
 
-  # Send full Claude analysis instead of filtered summary
-  # Set to true to see EVERYTHING Claude analyzes (for debugging/tuning)
-  # Set to false to only see filtered alerts that pass criteria
-  send_full_analysis: false  # ← Send concise filtered summaries only
-
-  # Enable interactive mode - Claude responds to questions in summary channel
-  # Users can ask about recent alerts, request context, or give commands
-  # Example: "What was that disk space alert about?" → Claude answers with context
-  # OPTIMIZED: Only queries LLM when new messages appear (no waste when idle)
-  interactive_mode: true
-
-  # How often to check for interactions in summary channel (seconds)
-  # Faster checking = more responsive conversations (but more API calls)
-  interaction_check_interval: 2  # Check every 2 seconds for questions
-
-  # Minimum urgency level to send (CRITICAL, IMPORTANT, NORMAL, IGNORE)
-  min_urgency_level: "IMPORTANT"
-
-  # Don't resend similar alerts within this time window (hours)
-  duplicate_window_hours: 24
-
-  # CRITICAL alerts use shorter dedup window (hours)
-  # Critical alerts are resent more frequently if issue persists
-  # Set to 0 to disable dedup for CRITICAL (always send)
-  # Set to 0.5 for 30 minutes, 1 for 1 hour, 2 for 2 hours, etc.
-  critical_dedup_hours: 0.5  # 30 minutes (was 2h - too aggressive!)
-
-  # How many times must an issue occur before alerting
-  recurrence_threshold: 3
-
-  # Ask Claude for final decision on borderline cases
-  use_claude_decision: true
-  prompt_log_file: "logs/claude_prompts.log"
-
-  # Optional active monitoring window (local time). When set, the monitor
-  # only runs between these hours (inclusive of start, exclusive of end).
-  active_hours:
-    start: "08:00"
-    end: "18:00"
-
-# Periodic summary mode (automatic digest in summary channel)
-smart_summary:
-  enabled: true
-  interval_minutes: 30  # Send digest every 30 minutes
-  lookback_minutes: 30
-  max_alerts: 8
-  include_filtered: true
-  send_initial: true
-  digest_only_mode: true  # Set true to disable continuous checking and only send digests
-  slack_channel: "cslog-alertas-resumo"  # Optional: envia resumos para um canal diferente
+notifications:
+  slack_webhook: null
   whatsapp:
     enabled: true
-    service_file: "whatsapp.txt"
-    auth_token_env: "TWILIO_AUTH_TOKEN"
-    use_template: false  # Sandbox supports plain text messages
+    service_file: whatsapp.txt
+    auth_token_env: TWILIO_AUTH_TOKEN
+    use_template: false
 
-# Advanced features
-advanced:
-  # Enable desktop notifications (requires notify-send on Linux)
-  notifications: false
+realtime_monitor:
+  enabled: true
+  check_interval_seconds: 30
+  severity_threshold: IMPORTANT
+  duplicate_window_minutes: 60
+  lookback_minutes: 120
+  llm:
+    enabled: false
 
-  # Send startup notification to summary channel
-  send_startup_notification: true
+digest:
+  enabled: true
+  interval_minutes: 30
+  lookback_minutes: 30
+  include_filtered: true
+  send_initial: true
+  llm:
+    enabled: false
 
-  # Include summary of recent alerts in startup notification
-  # Shows what happened in the last N hours before starting
-  startup_summary_hours: 1  # Look back 1 hour
-
-  # Database paths
-  database: "slack_messages.db"           # Standard monitor
-  smart_database: "smart_alerts.db"       # Smart monitor
-
-  # Enable message persistence
-  persist: true
-
-  # Enable detailed logging
-  verbose: true
-
-  # Slack Webhook URL (alternative to MCP for sending messages)
-  # Get from: https://api.slack.com/apps → Your App → Incoming Webhooks
-  # More reliable than MCP channel lookup
-  slack_webhook_url: null  # Set to webhook URL if using webhooks
-
-# Backward compatibility - keywords no longer used but kept for old scripts
-keywords: []
-
-# Custom importance rules (guides Claude's analysis)
-# These rules work WITH channel-specific rules above
-importance_rules: |
-  Sistema de Classificação de Alertas Baseado em Canais e Padrões:
-
-  CONTEXTO DOS CANAIS:
-  - cslog-alertas-bd: Alertas de banco de dados - importante quando se repete
-  - cslog-alertas-mc: Centro de monitoramento (MUITO VERBOSE) - atenção a padrões específicos:
-    * LOAD: Importante após 3 ocorrências
-    * Database locks: Importante mas ainda verbose (4+ ocorrências)
-    * Memória: APENAS se CRÍTICO
-  - cslog-alertas-grave: Alertas sérios - muito importante após 3+ repetições
-    * EXCEÇÃO: "dxserver serviço" geralmente é apenas atualização (ignorar)
-  - Outros canais: Importante se repetem significativamente (5+ vezes)
-
-  REGRAS GERAIS:
-  1. Mensagens de usuários específicos (gerentes, líderes)
-  2. Alertas sobre produção em horário fora do expediente
-  3. Notificações de monitoramento (downtime, alta latência)
-  4. Falhas de build/deployment
-  5. Problemas reportados por clientes
-  6. Alertas de segurança
-
-  CLASSIFICAÇÃO:
-  - CRÍTICO: Precisa atenção IMEDIATA (ex: produção down, perda de dados)
-  - IMPORTANTE: Revisar em até 1 hora (ex: degradação, erros recorrentes)
-  - NORMAL: Revisar quando conveniente (ex: avisos, info)
-  - IGNORAR: Não relevante (ex: ruído, logs normais, "dxserver serviço" updating)
+database: smart_alerts.db
+prompt_log_path: logs/claude_prompts.log
