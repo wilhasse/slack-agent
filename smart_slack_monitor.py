@@ -100,10 +100,14 @@ class SmartSlackMonitor(SlackMonitor):
         self._summary_schedule = self._prepare_summary_schedule(summary_schedule)
         self._summary_schedule_label = self._summary_schedule.get("label")
         self._digest_only_mode = self._summary_schedule.get("digest_only_mode", False)
+        self._digest_summary_channel_ref = self._summary_schedule.get("channel_ref")
+        self._digest_summary_channel_id = self._summary_schedule.get("slack_channel_id")
+        self._digest_summary_channel_label = self._summary_schedule.get("slack_channel")
         self._suppress_realtime_delivery = False
         self._summary_task: Optional[asyncio.Task] = None
         self._prompt_log_file = Path(prompt_log_file).expanduser() if prompt_log_file else None
         self._prompt_log_lock = asyncio.Lock()
+        self._whatsapp_log_file = Path("logs/whatsapp.log")
 
         self._init_database()
 
@@ -135,6 +139,16 @@ class SmartSlackMonitor(SlackMonitor):
                     log_file.write(prompt_text.strip() + "\n\n")
         except Exception as error:
             print(f"⚠️  Não foi possível registrar prompt ({label}): {error}")
+
+    def _log_whatsapp_event(self, message: str):
+        """Persist WhatsApp delivery attempts and outcomes."""
+        try:
+            self._whatsapp_log_file.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with self._whatsapp_log_file.open('a', encoding='utf-8') as log_file:
+                log_file.write(f"[{timestamp}] {message}\n")
+        except Exception as error:
+            print(f"⚠️  Não foi possível registrar log WhatsApp: {error}")
 
     def _prepare_summary_schedule(self, schedule: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Normalize summary schedule configuration."""
@@ -187,6 +201,27 @@ class SmartSlackMonitor(SlackMonitor):
             "digest_only_mode": digest_only_mode,
             "whatsapp": self._normalize_whatsapp_config(schedule.get("whatsapp")),
         }
+
+        digest_channel_raw = (
+            schedule.get("slack_channel")
+            or schedule.get("digest_channel")
+            or schedule.get("channel")
+        )
+        digest_channel_id = (
+            schedule.get("slack_channel_id")
+            or schedule.get("digest_channel_id")
+            or schedule.get("channel_id")
+        )
+
+        if digest_channel_raw:
+            digest_channel_str = str(digest_channel_raw)
+            schedule_normalized["slack_channel"] = digest_channel_str
+            schedule_normalized["channel_ref"] = self._coerce_channel_reference(digest_channel_str)
+        else:
+            schedule_normalized["slack_channel"] = None
+            schedule_normalized["channel_ref"] = None
+
+        schedule_normalized["slack_channel_id"] = str(digest_channel_id) if digest_channel_id else None
 
         schedule_normalized["label"] = f"cada {interval_minutes} min (janela {lookback_minutes} min)"
         return schedule_normalized
@@ -1766,6 +1801,8 @@ _Full report mode - showing Claude's complete analysis_"""
             auth_token = auth_token or parsed.get("auth_token")
 
         if not account_sid or not from_number or not to_number:
+            info = "Conta" if not account_sid else "remetente/destinatário"
+            self._log_whatsapp_event(f"Cancelado: configuração incompleta ({info}).")
             print("⚠️  Configuração WhatsApp incompleta; resumo não enviado por WhatsApp.")
             return
 
@@ -1773,6 +1810,7 @@ _Full report mode - showing Claude's complete analysis_"""
             auth_token = os.getenv(auth_token_env)
 
         if not auth_token:
+            self._log_whatsapp_event("Cancelado: token de autenticação Twilio ausente.")
             print("⚠️  Token de autenticação Twilio não encontrado; defina a variável de ambiente correspondente.")
             return
 
@@ -1780,6 +1818,9 @@ _Full report mode - showing Claude's complete analysis_"""
 
         # Split message into chunks if needed (max 1500 chars per message)
         chunks = self._split_message_smart(message, max_length=1500)
+        self._log_whatsapp_event(
+            f"Enviando resumo WhatsApp: {len(message)} chars em {len(chunks)} parte(s)."
+        )
 
         try:
             import httpx
@@ -1813,6 +1854,9 @@ _Full report mode - showing Claude's complete analysis_"""
                     if response.status_code in (200, 201):
                         sent_count += 1
                     else:
+                        self._log_whatsapp_event(
+                            f"Falha parte {i+1}/{len(chunks)}: {response.status_code} - {response.text[:120]}"
+                        )
                         print(f"⚠️  Falha ao enviar parte {i+1}/{len(chunks)}: {response.status_code} - {response.text[:200]}")
                         break
 
@@ -1823,12 +1867,22 @@ _Full report mode - showing Claude's complete analysis_"""
                 if sent_count == len(chunks):
                     if len(chunks) > 1:
                         print(f"📨 Resumo enviado via WhatsApp ({len(chunks)} mensagens, {len(message)} chars total)")
+                        self._log_whatsapp_event(
+                            f"Sucesso: {len(chunks)} mensagens enviadas ({len(message)} chars)."
+                        )
                     else:
                         print(f"📨 Resumo enviado via WhatsApp ({len(message)} chars)")
+                        self._log_whatsapp_event(
+                            f"Sucesso: 1 mensagem enviada ({len(message)} chars)."
+                        )
                 else:
                     print(f"⚠️  Enviadas apenas {sent_count}/{len(chunks)} mensagens")
+                    self._log_whatsapp_event(
+                        f"Parcial: enviadas {sent_count}/{len(chunks)} mensagens."
+                    )
 
         except Exception as error:
+            self._log_whatsapp_event(f"Erro durante envio WhatsApp: {error}")
             print(f"⚠️  Erro ao enviar WhatsApp: {error}")
 
     @staticmethod
@@ -1923,9 +1977,6 @@ _Full report mode - showing Claude's complete analysis_"""
 
     async def _send_digest_summary(self, reference_time: Optional[datetime] = None):
         """Send a digest of alerts observed within the configured lookback window."""
-        if not self.summary_channel:
-            return
-
         schedule = self._summary_schedule
         if not schedule.get("enabled"):
             return
@@ -2009,10 +2060,25 @@ _Full report mode - showing Claude's complete analysis_"""
         digest_message = "\n".join(message_lines)
 
         try:
-            if await self._send_to_slack(digest_message):
-                print(f"📨 Resumo automático enviado ({lookback_minutes}min, {total_alerts} alertas)")
+            slack_target_available = bool(self.summary_channel or self._digest_summary_channel_ref or self._digest_summary_channel_id)
+
+            if slack_target_available:
+                channel_id_override = self._digest_summary_channel_id
+                channel_override = None if channel_id_override else self._digest_summary_channel_ref
+                cache_bucket = "digest" if (channel_id_override or channel_override) else "summary"
+
+                if await self._send_to_slack(
+                    digest_message,
+                    channel_override=channel_override,
+                    channel_id_override=channel_id_override,
+                    cache_bucket=cache_bucket,
+                ):
+                    print(f"📨 Resumo automático enviado ({lookback_minutes}min, {total_alerts} alertas)")
+                else:
+                    print("❌ Falha ao enviar resumo automático")
             else:
-                print("❌ Falha ao enviar resumo automático")
+                print("⚠️  Canal Slack de resumo não configurado; pulando envio para Slack.")
+
             await self._send_whatsapp_digest(digest_message)
         except Exception as error:
             print(f"❌ Erro ao enviar resumo automático: {error}")
@@ -2070,7 +2136,13 @@ _Full report mode - showing Claude's complete analysis_"""
             "top_patterns": [{"pattern": p, "count": c} for p, c in top_patterns]
         }
 
-    async def _send_to_slack(self, message: str) -> bool:
+    async def _send_to_slack(
+        self,
+        message: str,
+        channel_override: Optional[str] = None,
+        channel_id_override: Optional[str] = None,
+        cache_bucket: str = "summary",
+    ) -> bool:
         """Send message to Slack via webhook or MCP"""
 
         # Option 1: Use webhook (more reliable, no channel lookup needed)
@@ -2093,19 +2165,27 @@ _Full report mode - showing Claude's complete analysis_"""
                 return False
 
         # Option 2: Use MCP (requires channel lookup)
-        if not self.client or not self.summary_channel:
+        if not self.client:
             return False
 
         # Escape for safer transmission
         safe_message = message.replace('"', "'").replace('`', "'")
 
-        channel_ref = self._get_summary_channel_reference()
-        if not channel_ref:
+        target_channel: Optional[str]
+
+        if channel_id_override:
+            target_channel = channel_id_override
+        elif channel_override:
+            target_channel = self._coerce_channel_reference(channel_override)
+        else:
+            target_channel = self._get_summary_channel_reference()
+
+        if not target_channel:
             return False
 
         query = f"""Use the mcp__slack__conversations_add_message tool with these parameters:
 
-channel: "{channel_ref}"
+channel: "{target_channel}"
 text: The complete alert message below
 
 IMPORTANT: Send the COMPLETE message including ALL lines. Do not truncate or summarize.
@@ -2116,7 +2196,8 @@ Message (send exactly as shown):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
 
         try:
-            await self._log_prompt("mcp_add_message", query)
+            prompt_label = "mcp_add_message_digest" if cache_bucket == "digest" else "mcp_add_message"
+            await self._log_prompt(prompt_label, query)
             await self.client.query(query)
 
             response, _ = await self._collect_response_text(timeout=self.response_timeout)
@@ -2132,13 +2213,18 @@ Message (send exactly as shown):
                 return False
             else:
                 # Try to extract channel ID from response for caching
-                if not self._summary_channel_id and "channel" in response_lower:
+                if "channel" in response_lower:
                     # Look for channel ID pattern (C followed by alphanumerics)
                     import re
                     match = re.search(r'C[A-Z0-9]{10,}', response)
                     if match:
-                        self._summary_channel_id = match.group(0)
-                        print(f"   📌 Cached channel ID: {self._summary_channel_id}")
+                        channel_id_found = match.group(0)
+                        if cache_bucket == "summary" and not self._summary_channel_id:
+                            self._summary_channel_id = channel_id_found
+                            print(f"   📌 Cached channel ID: {self._summary_channel_id}")
+                        elif cache_bucket == "digest" and not self._digest_summary_channel_id:
+                            self._digest_summary_channel_id = channel_id_found
+                            print(f"   📌 Cached digest channel ID: {self._digest_summary_channel_id}")
                 return True
         except Exception as e:
             print(f"   MCP exception: {e}")
@@ -2343,7 +2429,12 @@ _Monitor is now active and filtering alerts intelligently..._"""
         else:
             print(f"   Active hours: 24h (monitoramento contínuo)")
         if self._summary_schedule.get("enabled"):
-            print(f"   Resumo periódico: {self._summary_schedule_label}")
+            digest_target = self._digest_summary_channel_label or self.summary_channel
+            if digest_target:
+                digest_target_display = f"#{str(digest_target).lstrip('#')}"
+            else:
+                digest_target_display = "sem canal Slack"
+            print(f"   Resumo periódico: {self._summary_schedule_label} → {digest_target_display}")
         else:
             print(f"   Resumo periódico: desabilitado")
         print()

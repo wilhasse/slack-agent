@@ -135,6 +135,7 @@ smart_summary:
   include_filtered: true
   send_initial: true
   digest_only_mode: true  # Set true to disable continuous checking and only send digests
+  slack_channel: "cslog-alertas-resumo"  # Optional: envia resumos para um canal diferente
   whatsapp:
     enabled: true
     service_file: "whatsapp.txt"
