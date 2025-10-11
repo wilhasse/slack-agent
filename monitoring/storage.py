@@ -42,6 +42,9 @@ class AlertStore:
                 )
                 """
             )
+            self._ensure_column(cursor, "alerts", "channel_label", "TEXT", update_sql="UPDATE alerts SET channel_label = channel WHERE channel_label IS NULL OR channel_label = ''")
+            self._ensure_column(cursor, "alerts", "detected_at", "DATETIME DEFAULT CURRENT_TIMESTAMP", update_sql="UPDATE alerts SET detected_at = COALESCE(detected_at, created_at, CURRENT_TIMESTAMP)")
+            self._ensure_column(cursor, "alerts", "event_ts", "DATETIME")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_channel ON alerts(channel)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_detected_at ON alerts(detected_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_content_hash ON alerts(content_hash)")
@@ -264,6 +267,19 @@ class AlertStore:
             )
             conn.commit()
             return deleted
+
+    @staticmethod
+    def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, definition: str, update_sql: Optional[str] = None) -> None:
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if update_sql:
+                try:
+                    cursor.execute(update_sql)
+                except sqlite3.OperationalError:
+                    # best effort; ignore if legacy column missing
+                    pass
 
     def get_statistics(self, hours: int = 24) -> Dict[str, int]:
         with self._connection() as conn:
